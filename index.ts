@@ -65,29 +65,19 @@ function jsonSchemaToZod(inputSchema: any): z.ZodObject<any> {
   return z.object(shape);
 }
 
+/**
+ * Pass through full remote result so widgets (music player UI) render.
+ * Only extract text when backend returns error.
+ */
 function formatRemoteResult(result: any) {
   if (result?.isError) {
     const message = result.content?.[0]?.text || "Remote tool returned an error";
     return error(message);
   }
-
-  const hasWidget = result?.structuredContent != null || result?._meta != null;
-  const hasResource = result?.content?.some((c: any) => c.type === "resource" || c.resource);
-  if (hasWidget || hasResource) return result;
-
-  const textParts = result?.content
-    ?.filter((c: any) => c.type === "text")
-    .map((c: any) => c.text);
-
-  if (textParts?.length) {
-    const combined = textParts.join("\n");
-    try {
-      return object(JSON.parse(combined));
-    } catch {
-      return text(combined);
-    }
+  // Pass through full content (text + widgets) so music player UI renders
+  if (result?.content?.length || result?.structuredContent != null || result?._meta != null) {
+    return result;
   }
-
   return text("Remote tool executed successfully.");
 }
 

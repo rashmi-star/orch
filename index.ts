@@ -74,6 +74,19 @@ server.app.get("/resources/widgets/*", (c) => proxyToRemote(c, c.req.path));
 server.app.get("/mcp-use/widgets/*", (c) => proxyToRemote(c, c.req.path));
 server.app.get("/stream/*", (c) => proxyToRemote(c, c.req.path));
 
+// Debug: verify MCP_URL matches your deployed URL (e.g. https://young-voice-ngjrg.run.mcp-use.com)
+server.app.get("/config", (c) => {
+  const host = c.req.header("host");
+  const proto = c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || "https";
+  const requestBase = host ? `${proto}://${host}` : null;
+  return c.json({
+    MCP_URL: ORCH_BASE,
+    requestHost: requestBase,
+    match: requestBase ? ORCH_BASE === requestBase : "unknown",
+    note: "Set MCP_URL env to your deployed URL if they don't match. Mismatch causes stream/preview to fail.",
+  });
+});
+
 // Register ui://widget/music-player.html - ChatGPT expects HTML with text/html;profile=mcp-app, NOT a URL.
 server.resource(
   {
@@ -407,6 +420,9 @@ async function executePlaySongCommand(command: string) {
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3002;
 console.log(
   `music-intent-mcp starting on port ${PORT}. Target remote MCP: ${TARGET_MCP_URL}`
+);
+console.log(
+  `MCP_URL (ORCH_BASE): ${ORCH_BASE} — must match deployed URL for widget stream to work`
 );
 
 ensureRemoteConnected()

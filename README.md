@@ -21,7 +21,7 @@ Local MCP URL:
 - `TARGET_MCP_URL` (optional): remote MCP URL
 - `TARGET_SERVER_NAME` (optional): internal alias for remote server
 - `PORT` (optional): local port (default `3002`)
-- `MCP_URL` (optional): base URL for deployment metadata
+- `MCP_URL` (required for deploy): **Must match your deployed URL exactly** (e.g. `https://young-voice-ngjrg.run.mcp-use.com`). Mismatch causes widget stream to fail (shows PREVIEW instead of Full Track). After deploy, visit `https://your-orch-url/config` to verify.
 
 ## Tools
 

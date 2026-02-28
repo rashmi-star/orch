@@ -1,4 +1,5 @@
 import { MCPServer, error, object, text } from "mcp-use/server";
+import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import { MCPClient } from "mcp-use";
 import { z } from "zod";
 
@@ -27,20 +28,39 @@ const server = new MCPServer({
 // Proxy widget resources from remote MCP so client can load them (CSP/same-origin)
 async function proxyToRemote(c: any, path: string, rewriteHtml = false) {
   const targetUrl = `${TARGET_MCP_BASE}${path}`;
+  const host = c.req.header("host");
+  const proto =
+    c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() ||
+    (ORCH_BASE.startsWith("https") ? "https" : "http");
+  const base = host ? `${proto}://${host}` : ORCH_BASE;
   try {
     const res = await fetch(targetUrl);
     const headers = new Headers(res.headers);
     headers.set("Access-Control-Allow-Origin", "*");
-    let body: BodyInit = res.body;
-    if (rewriteHtml && res.ok && res.headers.get("content-type")?.includes("text/html")) {
-      const html = await res.text();
+    let body: BodyInit = res.body ?? new Blob();
+    if (rewriteHtml && res.ok) {
+      const ct = res.headers.get("content-type") || "";
+      const isHtml = ct.includes("text/html");
+      const isJs = ct.includes("javascript") || /\.(m?js|tsx?)(\?|$)/.test(path);
+      const text = await res.text();
       const targetEsc = TARGET_MCP_BASE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const proxyBase = `${ORCH_BASE}/widget-proxy/mcp-use/widgets`;
-      body = html
+      const proxyBase = `${base}/widget-proxy/mcp-use/widgets`;
+      let rewritten = text;
+      if (isHtml) {
+        const baseScript = `<script>window.__WIDGET_BASE_URL__="${base.replace(/\/$/, "")}";</script>`;
+        rewritten = rewritten
+          .replace(/<head\b[^>]*>/, (m) => m + baseScript)
+          .replace(/<html\b[^>]*>/, (m) => (text.includes("<head") ? m : m + baseScript));
+      }
+      rewritten = rewritten
         .replace(new RegExp(targetEsc + "/mcp-use/widgets/", "g"), `${proxyBase}/`)
-        .replace(new RegExp(targetEsc + "/mcp-use/public", "g"), `${ORCH_BASE}/widget-proxy/mcp-use/public`)
-        .replace(/<base href="[^"]*"\s*\/>/, `<base href="${ORCH_BASE}" />`)
+        .replace(new RegExp(targetEsc + "/mcp-use/public", "g"), `${base}/widget-proxy/mcp-use/public`)
+        .replace(/<base href="[^"]*"\s*\/>/, `<base href="${base}" />`)
         .replace(/(src|href)=["']\/mcp-use\/widgets\/([^"']*)["']/g, '$1="/widget-proxy/mcp-use/widgets/$2"');
+      if (isHtml || isJs) {
+        rewritten = rewritten.replace(/window\.location\.origin/g, "(window.__WIDGET_BASE_URL__||window.location.origin)");
+      }
+      body = rewritten;
     }
     return new Response(body, { status: res.status, headers });
   } catch (err: any) {
@@ -54,49 +74,55 @@ server.app.get("/resources/widgets/*", (c) => proxyToRemote(c, c.req.path));
 server.app.get("/mcp-use/widgets/*", (c) => proxyToRemote(c, c.req.path));
 server.app.get("/stream/*", (c) => proxyToRemote(c, c.req.path));
 
-// Register ui://widget/music-player.html resource (proxied widget URL).
-// Use /widget-proxy/ so our route wins (mcp-use's /mcp-use/widgets/ returns empty for orch).
-const WIDGET_URL = `${ORCH_BASE}/widget-proxy/mcp-use/widgets/music-player`;
+// Register ui://widget/music-player.html - ChatGPT expects HTML with text/html;profile=mcp-app, NOT a URL.
 server.resource(
   {
     name: "music-player-widget",
     uri: "ui://widget/music-player.html",
     description: "Music player widget UI (proxied from remote MCP)",
-    mimeType: "text/uri-list",
+    mimeType: RESOURCE_MIME_TYPE,
   },
-  async () => ({
-    contents: [
-      {
-        uri: "ui://widget/music-player.html",
-        mimeType: "text/uri-list",
-        text: WIDGET_URL,
-      },
-    ],
-  })
+  async () => {
+    const res = await fetch(`${TARGET_MCP_BASE}/mcp-use/widgets/music-player`);
+    if (!res.ok) {
+      return { contents: [{ uri: "ui://widget/music-player.html", mimeType: "text/plain", text: "Widget unavailable" }] };
+    }
+    const html = await res.text();
+    const base = ORCH_BASE;
+    const targetEsc = TARGET_MCP_BASE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const proxyBase = `${base}/widget-proxy/mcp-use/widgets`;
+    // Inject base URL so widget can fetch /stream/ when iframe has null/blob origin (proxied via orch).
+    // No backend change: we rewrite window.location.origin -> (__WIDGET_BASE_URL__||window.location.origin) in the built JS.
+    const baseScript = `<script>window.__WIDGET_BASE_URL__="${base.replace(/\/$/, "")}";</script>`;
+    const rewritten = html
+      .replace(/<head\b[^>]*>/, (m) => m + baseScript)
+      .replace(/<html\b[^>]*>/, (m) => (html.includes("<head") ? m : m + baseScript))
+      .replace(/window\.location\.origin/g, "(window.__WIDGET_BASE_URL__||window.location.origin)")
+      .replace(new RegExp(targetEsc + "/mcp-use/widgets/", "g"), `${proxyBase}/`)
+      .replace(new RegExp(targetEsc + "/mcp-use/public", "g"), `${base}/widget-proxy/mcp-use/public`)
+      .replace(/<base href="[^"]*"\s*\/>/, `<base href="${base}" />`)
+      .replace(/(src|href)=["']\/mcp-use\/widgets\/([^"']*)["']/g, `$1="${proxyBase}/$2"`);
+    return {
+      contents: [
+        {
+          uri: "ui://widget/music-player.html",
+          mimeType: RESOURCE_MIME_TYPE,
+          text: rewritten,
+          _meta: {
+            ui: {
+              prefersBorder: false,
+              domain: base,
+              csp: {
+                connectDomains: ["https://api.audius.co", "https://cdnt-preview.dzcdn.net"],
+                resourceDomains: ["https://cdnt-preview.dzcdn.net", "https://cdn-images.dzcdn.net"],
+              },
+            },
+          },
+        },
+      ],
+    };
+  }
 );
-
-// Register uiResource with CSP so ChatGPT allows embedding the widget iframe.
-// Domains: orch (widget + proxy), Audius, Deezer for streaming.
-server.uiResource({
-  type: "externalUrl",
-  name: "music-player",
-  widget: "music-player",
-  uri: "ui://widget/music-player.html",
-  title: "Music Player",
-  description: "Inline music player with play/pause and streaming",
-  appsSdkMetadata: {
-    "openai/widgetCSP": {
-      connect_domains: [
-        "https://api.audius.co",
-        "https://cdnt-preview.dzcdn.net",
-      ],
-      resource_domains: [
-        "https://cdnt-preview.dzcdn.net",
-        "https://cdn-images.dzcdn.net",
-      ],
-    },
-  },
-});
 
 let remoteSession: Awaited<ReturnType<MCPClient["createSession"]>> | null = null;
 let remoteTools: RemoteTool[] = [];

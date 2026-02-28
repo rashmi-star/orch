@@ -4,6 +4,7 @@ import { z } from "zod";
 
 const TARGET_MCP_URL =
   process.env.TARGET_MCP_URL || "https://young-surf-xt5j8.run.mcp-use.com/mcp";
+const TARGET_MCP_BASE = TARGET_MCP_URL.replace(/\/mcp\/?$/, "");
 const TARGET_SERVER_NAME = process.env.TARGET_SERVER_NAME || "remote_music";
 
 type RemoteTool = {
@@ -12,14 +13,29 @@ type RemoteTool = {
   inputSchema?: any;
 };
 
+const ORCH_BASE = process.env.MCP_URL || "http://localhost:3002";
 const server = new MCPServer({
   name: "music-intent-mcp",
   title: "Music Intent MCP",
   version: "1.0.0",
   description:
     "Uses a remote MCP as a tool source and routes natural language play-song commands.",
-  baseUrl: process.env.MCP_URL || "http://localhost:3002",
+  baseUrl: ORCH_BASE,
   host: "0.0.0.0",
+});
+
+// Proxy widget resources from remote MCP so client can load them (CSP/same-origin)
+server.app.get("/widget-proxy/*", async (c: any) => {
+  const path = c.req.path.replace(/^\/widget-proxy/, "");
+  const targetUrl = `${TARGET_MCP_BASE}${path}`;
+  try {
+    const res = await fetch(targetUrl);
+    const headers = new Headers(res.headers);
+    headers.set("Access-Control-Allow-Origin", "*");
+    return new Response(res.body, { status: res.status, headers });
+  } catch (err: any) {
+    return c.text(`Proxy error: ${err.message}`, 502);
+  }
 });
 
 let remoteSession: Awaited<ReturnType<MCPClient["createSession"]>> | null = null;
@@ -65,18 +81,35 @@ function jsonSchemaToZod(inputSchema: any): z.ZodObject<any> {
   return z.object(shape);
 }
 
+/** Recursively rewrite remote MCP URLs to orch proxy so client can load widgets */
+function rewriteWidgetUrls(obj: any): any {
+  if (obj == null) return obj;
+  if (typeof obj === "string") {
+    return obj.replace(
+      new RegExp(TARGET_MCP_BASE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"),
+      `${ORCH_BASE}/widget-proxy`
+    );
+  }
+  if (Array.isArray(obj)) return obj.map(rewriteWidgetUrls);
+  if (typeof obj === "object") {
+    return Object.fromEntries(
+      Object.entries(obj).map(([k, v]) => [k, rewriteWidgetUrls(v)])
+    );
+  }
+  return obj;
+}
+
 /**
  * Pass through full remote result so widgets (music player UI) render.
- * Only extract text when backend returns error.
+ * Rewrite widget URLs to go through orch proxy (same-origin for client).
  */
 function formatRemoteResult(result: any) {
   if (result?.isError) {
     const message = result.content?.[0]?.text || "Remote tool returned an error";
     return error(message);
   }
-  // Pass through full content (text + widgets) so music player UI renders
   if (result?.content?.length || result?.structuredContent != null || result?._meta != null) {
-    return result;
+    return rewriteWidgetUrls(JSON.parse(JSON.stringify(result)));
   }
   return text("Remote tool executed successfully.");
 }

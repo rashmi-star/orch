@@ -38,6 +38,27 @@ async function proxyToRemote(c: any, path: string) {
 }
 server.app.get("/widget-proxy/*", (c) => proxyToRemote(c, c.req.path.replace(/^\/widget-proxy/, "")));
 server.app.get("/resources/widgets/*", (c) => proxyToRemote(c, c.req.path));
+server.app.get("/mcp-use/widgets/*", (c) => proxyToRemote(c, c.req.path));
+
+// Register ui://widget/music-player.html so clients can load the proxied widget
+const WIDGET_URL = `${ORCH_BASE}/widget-proxy/mcp-use/widgets/music-player/index.html`;
+server.resource(
+  {
+    name: "music-player-widget",
+    uri: "ui://widget/music-player.html",
+    description: "Music player widget UI (proxied from remote MCP)",
+    mimeType: "text/uri-list",
+  },
+  async () => ({
+    contents: [
+      {
+        uri: "ui://widget/music-player.html",
+        mimeType: "text/uri-list",
+        text: WIDGET_URL,
+      },
+    ],
+  })
+);
 
 let remoteSession: Awaited<ReturnType<MCPClient["createSession"]>> | null = null;
 let remoteTools: RemoteTool[] = [];

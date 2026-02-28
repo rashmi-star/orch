@@ -34,9 +34,13 @@ async function proxyToRemote(c: any, path: string, rewriteHtml = false) {
     let body: BodyInit = res.body;
     if (rewriteHtml && res.ok && res.headers.get("content-type")?.includes("text/html")) {
       const html = await res.text();
+      const targetEsc = TARGET_MCP_BASE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const proxyBase = `${ORCH_BASE}/widget-proxy/mcp-use/widgets`;
       body = html
-        .replace(new RegExp(TARGET_MCP_BASE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/mcp-use/widgets/", "g"), `${ORCH_BASE}/widget-proxy/mcp-use/widgets/`)
-        .replace(/\/mcp-use\/widgets\//g, "/widget-proxy/mcp-use/widgets/");
+        .replace(new RegExp(targetEsc + "/mcp-use/widgets/", "g"), `${proxyBase}/`)
+        .replace(new RegExp(targetEsc + "/mcp-use/public", "g"), `${ORCH_BASE}/widget-proxy/mcp-use/public`)
+        .replace(/<base href="[^"]*"\s*\/>/, `<base href="${ORCH_BASE}" />`)
+        .replace(/(src|href)=["']\/mcp-use\/widgets\/([^"']*)["']/g, '$1="/widget-proxy/mcp-use/widgets/$2"');
     }
     return new Response(body, { status: res.status, headers });
   } catch (err: any) {

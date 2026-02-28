@@ -43,7 +43,7 @@ server.app.get("/stream/*", (c) => proxyToRemote(c, c.req.path));
 
 // Register ui://widget/music-player.html resource (proxied widget URL).
 // Use /mcp-use/widgets/ path so baseUrl is same-origin for CSP.
-const WIDGET_URL = `${ORCH_BASE}/mcp-use/widgets/music-player/index.html`;
+const WIDGET_URL = `${ORCH_BASE}/mcp-use/widgets/music-player`;
 server.resource(
   {
     name: "music-player-widget",

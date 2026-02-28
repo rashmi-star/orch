@@ -25,8 +25,7 @@ const server = new MCPServer({
 });
 
 // Proxy widget resources from remote MCP so client can load them (CSP/same-origin)
-server.app.get("/widget-proxy/*", async (c: any) => {
-  const path = c.req.path.replace(/^\/widget-proxy/, "");
+async function proxyToRemote(c: any, path: string) {
   const targetUrl = `${TARGET_MCP_BASE}${path}`;
   try {
     const res = await fetch(targetUrl);
@@ -36,7 +35,9 @@ server.app.get("/widget-proxy/*", async (c: any) => {
   } catch (err: any) {
     return c.text(`Proxy error: ${err.message}`, 502);
   }
-});
+}
+server.app.get("/widget-proxy/*", (c) => proxyToRemote(c, c.req.path.replace(/^\/widget-proxy/, "")));
+server.app.get("/resources/widgets/*", (c) => proxyToRemote(c, c.req.path));
 
 let remoteSession: Awaited<ReturnType<MCPClient["createSession"]>> | null = null;
 let remoteTools: RemoteTool[] = [];
@@ -201,12 +202,21 @@ async function ensureRemoteConnected() {
   remoteSession = await client.createSession(TARGET_SERVER_NAME);
   remoteTools = await remoteSession.listTools();
 
+  const playToolNames = ["play", "play-song", "play_song"];
   for (const remoteTool of remoteTools) {
+    const isPlayTool = playToolNames.includes(remoteTool.name.toLowerCase());
     server.tool(
       {
         name: `remote__${remoteTool.name}`,
         description: `[remote] ${remoteTool.description || remoteTool.name}`,
         schema: jsonSchemaToZod(remoteTool.inputSchema),
+        ...(isPlayTool && {
+          widget: {
+            name: "music-player",
+            invoking: "Searching for your song...",
+            invoked: "Now playing",
+          },
+        }),
       },
       async (args: any) => {
         if (!remoteSession) return error("Remote MCP is not connected.");
@@ -252,6 +262,11 @@ server.tool(
     schema: z.object({
       command: z.string().min(1).describe("Natural language command from user"),
     }),
+    widget: {
+      name: "music-player",
+      invoking: "Searching for your song...",
+      invoked: "Now playing",
+    },
   },
   async ({ command }) => {
     return executePlaySongCommand(command);
@@ -266,6 +281,11 @@ server.tool(
     schema: z.object({
       command: z.string().min(1),
     }),
+    widget: {
+      name: "music-player",
+      invoking: "Searching for your song...",
+      invoked: "Now playing",
+    },
   },
   async ({ command }) => {
     const lower = command.toLowerCase();

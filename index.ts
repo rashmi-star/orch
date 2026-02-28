@@ -25,25 +25,34 @@ const server = new MCPServer({
 });
 
 // Proxy widget resources from remote MCP so client can load them (CSP/same-origin)
-async function proxyToRemote(c: any, path: string) {
+async function proxyToRemote(c: any, path: string, rewriteHtml = false) {
   const targetUrl = `${TARGET_MCP_BASE}${path}`;
   try {
     const res = await fetch(targetUrl);
     const headers = new Headers(res.headers);
     headers.set("Access-Control-Allow-Origin", "*");
-    return new Response(res.body, { status: res.status, headers });
+    let body: BodyInit = res.body;
+    if (rewriteHtml && res.ok && res.headers.get("content-type")?.includes("text/html")) {
+      const html = await res.text();
+      body = html
+        .replace(new RegExp(TARGET_MCP_BASE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/mcp-use/widgets/", "g"), `${ORCH_BASE}/widget-proxy/mcp-use/widgets/`)
+        .replace(/\/mcp-use\/widgets\//g, "/widget-proxy/mcp-use/widgets/");
+    }
+    return new Response(body, { status: res.status, headers });
   } catch (err: any) {
     return c.text(`Proxy error: ${err.message}`, 502);
   }
 }
-server.app.get("/widget-proxy/*", (c) => proxyToRemote(c, c.req.path.replace(/^\/widget-proxy/, "")));
+server.app.get("/widget-proxy/*", (c) =>
+  proxyToRemote(c, c.req.path.replace(/^\/widget-proxy/, ""), true)
+);
 server.app.get("/resources/widgets/*", (c) => proxyToRemote(c, c.req.path));
 server.app.get("/mcp-use/widgets/*", (c) => proxyToRemote(c, c.req.path));
 server.app.get("/stream/*", (c) => proxyToRemote(c, c.req.path));
 
 // Register ui://widget/music-player.html resource (proxied widget URL).
-// Use /mcp-use/widgets/ path so baseUrl is same-origin for CSP.
-const WIDGET_URL = `${ORCH_BASE}/mcp-use/widgets/music-player`;
+// Use /widget-proxy/ so our route wins (mcp-use's /mcp-use/widgets/ returns empty for orch).
+const WIDGET_URL = `${ORCH_BASE}/widget-proxy/mcp-use/widgets/music-player`;
 server.resource(
   {
     name: "music-player-widget",

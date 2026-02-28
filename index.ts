@@ -39,9 +39,11 @@ async function proxyToRemote(c: any, path: string) {
 server.app.get("/widget-proxy/*", (c) => proxyToRemote(c, c.req.path.replace(/^\/widget-proxy/, "")));
 server.app.get("/resources/widgets/*", (c) => proxyToRemote(c, c.req.path));
 server.app.get("/mcp-use/widgets/*", (c) => proxyToRemote(c, c.req.path));
+server.app.get("/stream/*", (c) => proxyToRemote(c, c.req.path));
 
-// Register ui://widget/music-player.html so clients can load the proxied widget
-const WIDGET_URL = `${ORCH_BASE}/widget-proxy/mcp-use/widgets/music-player/index.html`;
+// Register ui://widget/music-player.html resource (proxied widget URL).
+// Use /mcp-use/widgets/ path so baseUrl is same-origin for CSP.
+const WIDGET_URL = `${ORCH_BASE}/mcp-use/widgets/music-player/index.html`;
 server.resource(
   {
     name: "music-player-widget",
@@ -59,6 +61,29 @@ server.resource(
     ],
   })
 );
+
+// Register uiResource with CSP so ChatGPT allows embedding the widget iframe.
+// Domains: orch (widget + proxy), Audius, Deezer for streaming.
+server.uiResource({
+  type: "externalUrl",
+  name: "music-player",
+  widget: "music-player",
+  uri: "ui://widget/music-player.html",
+  title: "Music Player",
+  description: "Inline music player with play/pause and streaming",
+  appsSdkMetadata: {
+    "openai/widgetCSP": {
+      connect_domains: [
+        "https://api.audius.co",
+        "https://cdnt-preview.dzcdn.net",
+      ],
+      resource_domains: [
+        "https://cdnt-preview.dzcdn.net",
+        "https://cdn-images.dzcdn.net",
+      ],
+    },
+  },
+});
 
 let remoteSession: Awaited<ReturnType<MCPClient["createSession"]>> | null = null;
 let remoteTools: RemoteTool[] = [];

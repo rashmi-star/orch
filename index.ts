@@ -2,7 +2,7 @@ import { MCPServer, error, object, text } from "mcp-use/server";
 import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import { MCPClient } from "mcp-use";
 import { z } from "zod";
-import { readFileSync } from "fs";
+import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join } from "path";
 
 // Load MCP servers from config file - add new URLs here, no code changes needed
@@ -149,38 +149,91 @@ server.app.get("/config", (c) => {
   });
 });
 
-// Orch dashboard: MCP icons; click copies @server for next message (same style as widget)
-server.app.get("/", (c) => c.html(buildOrchHubHtml(ORCH_BASE)));
+// API: get current MCPs (reads from file – reflects adds before restart)
+server.app.get("/api/mcp", (c) => {
+  try {
+    const { mcpServers } = loadMcpConfig();
+    return c.json({ mcpServers });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
 
-// Orch hub widget – shows in chat; click MCP icons to copy @tag (styled like music/yt widgets)
-function buildOrchHubHtml(base: string): string {
+// API: add new MCP (writes to config; restart orch to apply)
+server.app.post("/api/mcp", async (c) => {
+  try {
+    const body = await c.req.json() as { name?: string; url?: string; prefix?: string; playWidget?: string; icon?: string };
+    const name = String(body.name || "").trim().toLowerCase().replace(/\s+/g, "-");
+    const url = String(body.url || "").trim();
+    const prefix = String(body.prefix || "").trim() || `${name}__`;
+    if (!name || !url) return c.json({ error: "name and url required" }, 400);
+    if (!/^https?:\/\//.test(url)) return c.json({ error: "url must start with https://" }, 400);
+    const { mcpServers } = loadMcpConfig();
+    if (mcpServers[name]) return c.json({ error: `MCP "${name}" already exists` }, 400);
+    const normalized = url.replace(/\/+$/, "") + (url.endsWith("/mcp") ? "" : "/mcp");
+    mcpServers[name] = { url: normalized, prefix, ...(body.playWidget && { playWidget: body.playWidget }), ...(body.icon && { icon: body.icon }) };
+    writeFileSync(CONFIG_PATH, JSON.stringify({ mcpServers }, null, 2), "utf-8");
+    return c.json({ ok: true, message: `Added ${name}. Restart orch to apply.` });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// Orch dashboard: MCP icons + add form
+server.app.get("/", (c) => c.html(buildOrchHubHtml(ORCH_BASE, true)));
+
+// Orch hub – dashboard HTML (with add form when at /; widget version has no form)
+function buildOrchHubHtml(base: string, includeAddForm = false): string {
   const mcps = Object.entries(mcpServers).map(([name, cfg]) => ({
     name,
     icon: cfg.icon ?? DEFAULT_ICONS[name] ?? "🔗",
     atTag: `@${name}`,
   }));
+  const addForm = includeAddForm ? `
+  <div class="orch-add">
+    <h3 class="orch-add-title">Add deployed MCP</h3>
+    <form id="addForm" class="orch-form">
+      <input name="name" placeholder="Name (e.g. my-mcp)" required class="orch-input" />
+      <input name="url" type="url" placeholder="https://xxx.run.mcp-use.com/mcp" required class="orch-input" />
+      <input name="prefix" placeholder="Prefix (e.g. my__)" class="orch-input" />
+      <input name="playWidget" placeholder="Widget (e.g. music-player)" class="orch-input" />
+      <button type="submit" class="orch-btn">Add</button>
+    </form>
+    <p class="orch-note">Restart orch to apply new MCPs</p>
+    <div id="addMsg" class="orch-msg"></div>
+  </div>` : "";
   return `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-:root{--orch-radius:16px;--orch-purple:#8b5cf6;--orch-pink:#ec4899;--orch-bg:#0a0a0f;--orch-surface:rgba(255,255,255,0.04);--orch-border:rgba(255,255,255,0.06);--orch-text:#f0f0f5;--orch-muted:rgba(255,255,255,0.45)}
-body{font-family:Inter,-apple-system,BlinkMacSystemFont,sans-serif;background:var(--orch-bg);color:var(--orch-text);font-size:14px;-webkit-font-smoothing:antialiased;padding:20px;max-width:420px;margin:0 auto}
-.orch-root{position:relative;border-radius:var(--orch-radius);border:1px solid var(--orch-border);overflow:hidden;background:linear-gradient(180deg,rgba(139,92,246,0.06) 0%,transparent 50%)}
+:root{--orch-radius:16px;--orch-purple:#8b5cf6;--orch-bg:#0a0a0f;--orch-surface:rgba(255,255,255,0.04);--orch-border:rgba(255,255,255,0.06);--orch-text:#f0f0f5;--orch-muted:rgba(255,255,255,0.45)}
+body{font-family:Inter,-apple-system,sans-serif;background:var(--orch-bg);color:var(--orch-text);font-size:14px;padding:20px;max-width:480px;margin:0 auto}
+.orch-root{border-radius:var(--orch-radius);border:1px solid var(--orch-border);overflow:hidden;background:linear-gradient(180deg,rgba(139,92,246,0.06) 0%,transparent 50%)}
 .orch-header{padding:16px 20px 12px;border-bottom:1px solid var(--orch-border)}
-.orch-title{font-size:15px;font-weight:650;letter-spacing:-0.02em;color:#fff}
+.orch-title{font-size:15px;font-weight:650;color:#fff}
 .orch-sub{font-size:12px;color:var(--orch-muted);margin-top:4px}
 .orch-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px;padding:16px 20px 20px}
-.orch-card{background:var(--orch-surface);border:1px solid var(--orch-border);border-radius:12px;padding:14px 16px;cursor:pointer;display:flex;align-items:center;gap:12px;transition:all .2s ease}
-.orch-card:hover{border-color:rgba(139,92,246,0.35);background:rgba(139,92,246,0.08);transform:translateY(-1px);box-shadow:0 4px 20px rgba(139,92,246,0.12)}
-.orch-card:active{transform:translateY(0)}
+.orch-card{background:var(--orch-surface);border:1px solid var(--orch-border);border-radius:12px;padding:14px 16px;cursor:pointer;display:flex;align-items:center;gap:12px;transition:all .2s}
+.orch-card:hover{border-color:rgba(139,92,246,0.35);background:rgba(139,92,246,0.08);transform:translateY(-1px)}
 .orch-icon{font-size:24px;width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,0.06);flex-shrink:0}
 .orch-card:hover .orch-icon{background:rgba(139,92,246,0.2)}
 .orch-card-body{min-width:0}
 .orch-name{font-weight:600;font-size:13px;text-transform:capitalize;color:#fff}
 .orch-tag{font-size:11px;color:var(--orch-muted);margin-top:2px;font-family:ui-monospace,monospace}
-.orch-toast{position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:rgba(15,15,20,0.95);padding:0.5rem 1rem;border-radius:8px;font-size:12px;color:#fff;border:1px solid var(--orch-border);opacity:0;transition:opacity .2s;pointer-events:none}
+.orch-toast{position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:rgba(15,15,20,0.95);padding:0.5rem 1rem;border-radius:8px;font-size:12px;border:1px solid var(--orch-border);opacity:0;transition:opacity .2s;pointer-events:none}
 .orch-toast.show{opacity:1}
+.orch-add{margin-top:20px;padding:16px;border:1px solid var(--orch-border);border-radius:var(--orch-radius);background:var(--orch-surface)}
+.orch-add-title{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--orch-muted)}
+.orch-form{display:flex;flex-direction:column;gap:8px}
+.orch-input{background:rgba(0,0,0,0.3);border:1px solid var(--orch-border);border-radius:8px;padding:8px 12px;color:#fff;font-size:13px}
+.orch-input::placeholder{color:var(--orch-muted)}
+.orch-btn{background:var(--orch-purple);color:#fff;border:none;border-radius:8px;padding:10px;font-weight:600;cursor:pointer;font-size:13px}
+.orch-btn:hover{opacity:0.9}
+.orch-note{font-size:11px;color:var(--orch-muted);margin-top:8px}
+.orch-msg{font-size:12px;margin-top:8px;min-height:1.2em}
+.orch-msg.ok{color:#4ade80}
+.orch-msg.err{color:#f87171}
 </style></head>
 <body>
 <div class="orch-root">
@@ -189,10 +242,16 @@ body{font-family:Inter,-apple-system,BlinkMacSystemFont,sans-serif;background:va
     <p class="orch-sub">Click an MCP to copy its @tag for your next message</p>
   </div>
   <div class="orch-grid">${mcps.map((m) => `<button class="orch-card" data-tag="${m.atTag}" title="Copy ${m.atTag}"><span class="orch-icon">${m.icon}</span><div class="orch-card-body"><div class="orch-name">${m.name}</div><div class="orch-tag">${m.atTag}</div></div></button>`).join("")}</div>
-</div>
+</div>${addForm}
 <div class="orch-toast" id="toast">Copied!</div>
 <script>
 document.querySelectorAll('.orch-card').forEach(btn=>{btn.addEventListener('click',async()=>{const tag=btn.dataset.tag+' ';try{await navigator.clipboard.writeText(tag);const t=document.getElementById('toast');t.textContent='Copied '+tag.trim();t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1500)}catch(e){prompt('Copy:',tag)}})});
+${includeAddForm ? `
+const form=document.getElementById('addForm');const msg=document.getElementById('addMsg');
+form.addEventListener('submit',async(e)=>{e.preventDefault();msg.textContent='';msg.className='orch-msg';
+const fd=new FormData(form);const r=await fetch('/api/mcp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:fd.get('name'),url:fd.get('url'),prefix:fd.get('prefix')||undefined,playWidget:fd.get('playWidget')||undefined})});
+const j=await r.json();msg.textContent=j.error||j.message;msg.className='orch-msg '+(j.error?'err':'ok');if(j.ok)form.reset();});
+` : ""}
 </script></body></html>`;
 }
 
@@ -205,7 +264,7 @@ server.resource(
   },
   async () => {
     const base = ORCH_BASE.replace(/\/$/, "");
-    const html = buildOrchHubHtml(base);
+    const html = buildOrchHubHtml(base, false);
     return {
       contents: [{ uri: "ui://widget/orch-dashboard.html", mimeType: RESOURCE_MIME_TYPE, text: html }],
     };

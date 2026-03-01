@@ -11,8 +11,15 @@ const CONFIG_PATH = process.env.MCP_SERVERS_FILE || join(process.cwd(), "mcp-ser
 interface ServerConfig {
   url: string;
   prefix: string;
-  playWidget?: string;
+  playWidget?: string; // if set, all tools from this server get the widget (auto-reflects when MCP adds tools)
+  icon?: string;
 }
+
+const DEFAULT_ICONS: Record<string, string> = {
+  music: "🎵",
+  youtube: "▶️",
+  message: "💬",
+};
 
 type McpServersConfig = Record<string, ServerConfig>;
 
@@ -43,10 +50,24 @@ function loadMcpConfig(): { mcpServers: McpServersConfig } {
 const { mcpServers } = loadMcpConfig();
 const SERVER_NAMES = Object.keys(mcpServers);
 
-// Find music server (has playWidget) for widget resource and play-song
-const MUSIC_SERVER = SERVER_NAMES.find((k) => mcpServers[k].playWidget) || SERVER_NAMES[0];
+// Map: widget name -> MCP base URL (for proxy routing)
+const WIDGET_TO_BASE: Record<string, string> = {};
+for (const [name, cfg] of Object.entries(mcpServers)) {
+  if (cfg.playWidget) {
+    WIDGET_TO_BASE[cfg.playWidget] = cfg.url.replace(/\/mcp\/?$/, "");
+  }
+}
+
+const MUSIC_SERVER = SERVER_NAMES.find((k) => mcpServers[k].playWidget === "music-player") || SERVER_NAMES[0];
 const TARGET_MCP_URL = mcpServers[MUSIC_SERVER]?.url || "https://young-surf-xt5j8.run.mcp-use.com/mcp";
 const TARGET_MCP_BASE = TARGET_MCP_URL.replace(/\/mcp\/?$/, "");
+
+function getProxyBaseForPath(path: string): string {
+  for (const [widgetName, base] of Object.entries(WIDGET_TO_BASE)) {
+    if (path.includes(widgetName)) return base;
+  }
+  return TARGET_MCP_BASE;
+}
 
 type RemoteTool = {
   name: string;
@@ -67,7 +88,8 @@ const server = new MCPServer({
 
 // Proxy widget resources from remote MCP so client can load them (CSP/same-origin)
 async function proxyToRemote(c: any, path: string, rewriteHtml = false) {
-  const targetUrl = `${TARGET_MCP_BASE}${path}`;
+  const proxyBase = getProxyBaseForPath(path);
+  const targetUrl = `${proxyBase}${path}`;
   const host = c.req.header("host");
   const proto =
     c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() ||
@@ -83,8 +105,8 @@ async function proxyToRemote(c: any, path: string, rewriteHtml = false) {
       const isHtml = ct.includes("text/html");
       const isJs = ct.includes("javascript") || /\.(m?js|tsx?)(\?|$)/.test(path);
       const text = await res.text();
-      const targetEsc = TARGET_MCP_BASE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const proxyBase = `${base}/widget-proxy/mcp-use/widgets`;
+      const targetEsc = proxyBase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const orchWidgetPath = `${base}/widget-proxy/mcp-use/widgets`;
       let rewritten = text;
       if (isHtml) {
         const baseScript = `<script>window.__WIDGET_BASE_URL__="${base.replace(/\/$/, "")}";</script>`;
@@ -93,7 +115,7 @@ async function proxyToRemote(c: any, path: string, rewriteHtml = false) {
           .replace(/<html\b[^>]*>/, (m) => (text.includes("<head") ? m : m + baseScript));
       }
       rewritten = rewritten
-        .replace(new RegExp(targetEsc + "/mcp-use/widgets/", "g"), `${proxyBase}/`)
+        .replace(new RegExp(targetEsc + "/mcp-use/widgets/", "g"), `${orchWidgetPath}/`)
         .replace(new RegExp(targetEsc + "/mcp-use/public", "g"), `${base}/widget-proxy/mcp-use/public`)
         .replace(/<base href="[^"]*"\s*\/>/, `<base href="${base}" />`)
         .replace(/(src|href)=["']\/mcp-use\/widgets\/([^"']*)["']/g, '$1="/widget-proxy/mcp-use/widgets/$2"');
@@ -127,51 +149,126 @@ server.app.get("/config", (c) => {
   });
 });
 
-// Register ui://widget/music-player.html - ChatGPT expects HTML with text/html;profile=mcp-app, NOT a URL.
-server.resource(
-  {
-    name: "music-player-widget",
-    uri: "ui://widget/music-player.html",
-    description: "Music player widget UI (proxied from remote MCP)",
-    mimeType: RESOURCE_MIME_TYPE,
-  },
-  async () => {
-    const res = await fetch(`${TARGET_MCP_BASE}/mcp-use/widgets/music-player`);
-    if (!res.ok) {
-      return { contents: [{ uri: "ui://widget/music-player.html", mimeType: "text/plain", text: "Widget unavailable" }] };
-    }
-    const html = await res.text();
-    const base = TARGET_MCP_BASE.replace(/\/$/, "");
-    // Point widget to music-player-mcp directly - it exposes /mcp-use/widgets and /stream.
-    // Orch gateway doesn't expose custom routes, so we load from the backend that does.
-    const baseScript = `<script>window.__WIDGET_BASE_URL__="${base}";</script>`;
-    const rewritten = html
-      .replace(/<head\b[^>]*>/, (m) => m + baseScript)
-      .replace(/<html\b[^>]*>/, (m) => (html.includes("<head") ? m : m + baseScript))
-      .replace(/<base href="[^"]*"\s*\/>/, `<base href="${base}/" />`)
-      .replace(/window\.location\.origin/g, "(window.__WIDGET_BASE_URL__||window.location.origin)");
-    // No URL rewriting - keep original paths; base href makes them resolve to music-player-mcp
-    return {
-      contents: [
-        {
-          uri: "ui://widget/music-player.html",
-          mimeType: RESOURCE_MIME_TYPE,
-          text: rewritten,
-          _meta: {
-            ui: {
-              prefersBorder: false,
-              domain: base,
-              csp: {
-                connectDomains: [base, "https://api.audius.co", "https://cdnt-preview.dzcdn.net"],
-                resourceDomains: [base, "https://cdnt-preview.dzcdn.net", "https://cdn-images.dzcdn.net"],
+// Orch dashboard: MCP icons; click copies @server for next message
+server.app.get("/", (c) => {
+  const host = c.req.header("host");
+  const proto = c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || "https";
+  const base = host ? `${proto}://${host}` : ORCH_BASE;
+  const mcps = Object.entries(mcpServers).map(([name, cfg]) => ({
+    name,
+    icon: cfg.icon ?? DEFAULT_ICONS[name] ?? "🔗",
+    prefix: cfg.prefix,
+    atTag: `@${name}`,
+  }));
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orch – MCP Hub</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; min-height: 100vh; background: #0f0f12; color: #e4e4e7; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1.5rem; }
+    h1 { font-size: 1.5rem; font-weight: 600; margin-bottom: 0.5rem; }
+    .sub { color: #71717a; font-size: 0.9rem; margin-bottom: 2rem; }
+    .grid { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: center; }
+    .mcp { background: #18181b; border: 1px solid #27272a; border-radius: 12px; padding: 1.25rem 1.5rem; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; gap: 0.75rem; min-width: 140px; }
+    .mcp:hover { border-color: #3f3f46; background: #27272a; transform: translateY(-2px); }
+    .mcp:active { transform: translateY(0); }
+    .mcp-icon { font-size: 1.75rem; }
+    .mcp-name { font-weight: 500; text-transform: capitalize; }
+    .mcp-tag { font-size: 0.75rem; color: #71717a; margin-top: 0.25rem; }
+    .toast { position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%); background: #27272a; padding: 0.5rem 1rem; border-radius: 8px; font-size: 0.9rem; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+    .toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+  <h1>Orch</h1>
+  <p class="sub">Click an MCP to copy its @tag for your next message</p>
+  <div class="grid">
+    ${mcps
+      .map(
+        (m) => `
+    <button class="mcp" data-tag="${m.atTag}" title="Copy ${m.atTag}">
+      <span class="mcp-icon">${m.icon}</span>
+      <div>
+        <div class="mcp-name">${m.name}</div>
+        <div class="mcp-tag">${m.atTag}</div>
+      </div>
+    </button>`
+      )
+      .join("")}
+  </div>
+  <div class="toast" id="toast">Copied!</div>
+  <script>
+    document.querySelectorAll('.mcp').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const tag = btn.dataset.tag + ' ';
+        try {
+          await navigator.clipboard.writeText(tag);
+          const t = document.getElementById('toast');
+          t.textContent = 'Copied ' + tag.trim() + ' – paste in your next message';
+          t.classList.add('show');
+          setTimeout(() => t.classList.remove('show'), 2000);
+        } catch (e) {
+          prompt('Copy this for your next message:', tag);
+        }
+      });
+    });
+  </script>
+</body>
+</html>`;
+  return c.html(html);
+});
+
+// Register widget resources for each server with playWidget (config-driven, no code change for new MCPs)
+for (const [serverName, cfg] of Object.entries(mcpServers)) {
+  const widgetName = cfg.playWidget;
+  if (!widgetName) continue;
+
+  const widgetBase = cfg.url.replace(/\/mcp\/?$/, "");
+  server.resource(
+    {
+      name: `${widgetName}-widget`,
+      uri: `ui://widget/${widgetName}.html`,
+      description: `${widgetName} widget (proxied from ${serverName} MCP)`,
+      mimeType: RESOURCE_MIME_TYPE,
+    },
+    async () => {
+      const res = await fetch(`${widgetBase}/mcp-use/widgets/${widgetName}`);
+      if (!res.ok) {
+        return { contents: [{ uri: `ui://widget/${widgetName}.html`, mimeType: "text/plain", text: "Widget unavailable" }] };
+      }
+      const html = await res.text();
+      const base = widgetBase.replace(/\/$/, "");
+      const baseScript = `<script>window.__WIDGET_BASE_URL__="${base}";</script>`;
+      const rewritten = html
+        .replace(/<head\b[^>]*>/, (m) => m + baseScript)
+        .replace(/<html\b[^>]*>/, (m) => (html.includes("<head") ? m : m + baseScript))
+        .replace(/<base href="[^"]*"\s*\/>/, `<base href="${base}/" />`)
+        .replace(/window\.location\.origin/g, "(window.__WIDGET_BASE_URL__||window.location.origin)");
+      return {
+        contents: [
+          {
+            uri: `ui://widget/${widgetName}.html`,
+            mimeType: RESOURCE_MIME_TYPE,
+            text: rewritten,
+            _meta: {
+              ui: {
+                prefersBorder: false,
+                domain: base,
+                csp: {
+                  connectDomains: [base, "https://www.youtube.com", "https://youtube.com", "https://i.ytimg.com", "https://api.audius.co", "https://cdnt-preview.dzcdn.net"],
+                  resourceDomains: [base, "https://i.ytimg.com", "https://img.youtube.com", "https://cdnt-preview.dzcdn.net", "https://cdn-images.dzcdn.net"],
+                },
               },
             },
           },
-        },
-      ],
-    };
-  }
-);
+        ],
+      };
+    }
+  );
+}
 
 type Session = Awaited<ReturnType<MCPClient["createSession"]>>;
 const sessions: Record<string, Session | null> = {};
@@ -217,14 +314,19 @@ function jsonSchemaToZod(inputSchema: any): z.ZodObject<any> {
   return z.object(shape);
 }
 
+/** All MCP base URLs that may appear in tool results (for widget URL rewriting) */
+const ALL_MCP_BASES = [...new Set([TARGET_MCP_BASE, ...Object.values(WIDGET_TO_BASE)])];
+
 /** Recursively rewrite remote MCP URLs to orch proxy so client can load widgets */
 function rewriteWidgetUrls(obj: any): any {
   if (obj == null) return obj;
   if (typeof obj === "string") {
-    return obj.replace(
-      new RegExp(TARGET_MCP_BASE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"),
-      `${ORCH_BASE}/widget-proxy`
-    );
+    let s = obj;
+    for (const base of ALL_MCP_BASES) {
+      const esc = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      s = s.replace(new RegExp(esc, "g"), `${ORCH_BASE}/widget-proxy`);
+    }
+    return s;
   }
   if (Array.isArray(obj)) return obj.map(rewriteWidgetUrls);
   if (typeof obj === "object") {
@@ -341,32 +443,26 @@ async function ensureRemoteConnected() {
     toolsByServer[serverName] = await session.listTools();
   }
 
-  const playToolNames = ["play", "play-song", "play_song"];
-  const musicTools = toolsByServer[MUSIC_SERVER] || [];
-
   for (const [serverName, config] of Object.entries(mcpServers)) {
     const serverTools = toolsByServer[serverName] || [];
     const session = sessions[serverName];
-    const isMusicServer = serverName === MUSIC_SERVER;
+    const widgetName = config.playWidget;
 
     for (const tool of serverTools) {
       const prefixedName = `${config.prefix}${tool.name}`;
-      const isPlayTool = isMusicServer && playToolNames.includes(tool.name.toLowerCase());
-      const widgetName = config.playWidget;
 
       server.tool(
         {
           name: prefixedName,
           description: `[${serverName}] ${tool.description || tool.name}`,
           schema: jsonSchemaToZod(tool.inputSchema),
-          ...(isPlayTool &&
-            widgetName && {
-              widget: {
-                name: widgetName,
-                invoking: "Searching for your song...",
-                invoked: "Now playing",
-              },
-            }),
+          ...(widgetName && {
+            widget: {
+              name: widgetName,
+              invoking: "Loading...",
+              invoked: "Done",
+            },
+          }),
         },
         async (args: any) => {
           if (!session) return error(`${serverName} MCP is not connected.`);
@@ -376,11 +472,8 @@ async function ensureRemoteConnected() {
               const msg = (result.content?.[0] as { text?: string })?.text || "Tool failed";
               return error(msg);
             }
-            if (isMusicServer && (result?.content?.length || result?.structuredContent != null || result?._meta != null)) {
-              return formatRemoteResult(result);
-            }
             if (result?.content?.length || result?.structuredContent != null || result?._meta != null) {
-              return result as any;
+              return formatRemoteResult(result);
             }
             return text("Done.");
           } catch (err: any) {
@@ -436,7 +529,7 @@ server.tool(
   {
     name: "route-command",
     description:
-      "Route a plain user command. If it asks to play music/song, this calls play-song. Otherwise returns guidance.",
+      "Route a plain user command. Supports @music, @youtube, @message to target a specific MCP. E.g. '@music play believer' or '@youtube search coldplay'.",
     schema: z.object({
       command: z.string().min(1),
     }),
@@ -447,15 +540,88 @@ server.tool(
     },
   },
   async ({ command }) => {
-    const lower = command.toLowerCase();
-    if (/\b(play|start|put on)\b/.test(lower) && /\b(song|music|track)\b/.test(lower)) {
-      return executePlaySongCommand(command);
+    const trimmed = command.trim();
+    const atMatch = trimmed.match(/^@(\w+)\s+(.+)$/);
+    let target: string | null = null;
+    let rest = trimmed;
+
+    if (atMatch) {
+      target = atMatch[1].toLowerCase();
+      rest = atMatch[2].trim();
+      if (!mcpServers[target]) {
+        target = null;
+        rest = trimmed;
+      }
     }
+
+    // @music or implicit play/music keywords
+    const lower = rest.toLowerCase();
+    const isPlayIntent =
+      target === "music" ||
+      (/\b(play|start|put on)\b/.test(lower) && /\b(song|music|track)\b/.test(lower));
+
+    if (isPlayIntent && rest) {
+      return executePlaySongCommand(rest);
+    }
+
+    // @youtube: try search tool for "search X" or plain query
+    if (target === "youtube" && rest) {
+      await ensureRemoteConnected();
+      const searchMatch = rest.match(/^search\s+(.+)$/i) || (rest ? [null, rest] : null);
+      const query = searchMatch?.[1]?.trim() || rest;
+      const searchTool = (toolsByServer["youtube"] || []).find(
+        (t) => t.name.toLowerCase().includes("search")
+      );
+      if (searchTool && query) {
+        const args = buildArgsFromSchema(searchTool.inputSchema, query, rest);
+        return executeRemoteTool("youtube", searchTool.name, args);
+      }
+      return text(`For YouTube use: yt__search "query" or yt__play "url". Try: yt__search "${rest.slice(0, 30)}"`);
+    }
+
+    // @message: guidance
+    if (target === "message") {
+      return text("For messages use: chat__send, chat__read, chat__register. Example: chat__send { to, body }");
+    }
+
+    // Generic @target: show available tools
+    if (target && mcpServers[target]) {
+      await ensureRemoteConnected();
+      const tools = (toolsByServer[target] || []).slice(0, 5).map((t) => `${mcpServers[target].prefix}${t.name}`).join(", ");
+      return text(`@${target} tools: ${tools || "none"}${rest ? `. For "${rest}" try the matching tool.` : ""}`);
+    }
+
     return text(
-      "I route play-song to music. Use chat__* for messages, yt__* for YouTube. Try 'play-song' or 'list-remote-tools'."
+      "Use @music, @youtube, @message to target an MCP. Or: play-song, list-remote-tools. Visit / for the dashboard."
     );
   }
 );
+
+async function executeRemoteTool(
+  serverName: string,
+  toolName: string,
+  args: Record<string, unknown>
+): Promise<any> {
+  await ensureRemoteConnected();
+  const session = sessions[serverName];
+  const cfg = mcpServers[serverName];
+  if (!session || !cfg) return error(`${serverName} MCP is not connected.`);
+  const tool = (toolsByServer[serverName] || []).find((t) => t.name === toolName);
+  if (!tool) return error(`Tool ${toolName} not found on ${serverName}.`);
+  try {
+    const result = await session.callTool(toolName, args);
+    if (result?.isError) {
+      const msg = (result.content?.[0] as { text?: string })?.text || "Tool failed";
+      return error(msg);
+    }
+    if (result?.content?.length || result?.structuredContent != null || result?._meta != null) {
+      return formatRemoteResult(result);
+    }
+    return text("Done.");
+  } catch (err: any) {
+    return error(`${serverName} tool failed: ${err.message}`);
+  }
+}
 
 async function executePlaySongCommand(command: string) {
   try {

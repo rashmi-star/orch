@@ -24,7 +24,7 @@ Add or edit MCP servers in `mcp-servers.json` — no code changes needed:
 {
   "mcpServers": {
     "music": { "url": "https://.../mcp", "prefix": "remote__", "playWidget": "music-player" },
-    "youtube": { "url": "https://.../mcp", "prefix": "yt__" },
+    "youtube": { "url": "https://.../mcp", "prefix": "yt__", "playWidget": "youtube-player" },
     "message": { "url": "https://.../mcp", "prefix": "chat__" }
   }
 }
@@ -32,7 +32,7 @@ Add or edit MCP servers in `mcp-servers.json` — no code changes needed:
 
 - `url`: deployed MCP endpoint
 - `prefix`: tool name prefix (e.g. `remote__`, `yt__`, `chat__`)
-- `playWidget`: optional; server with this gets the music widget and play-song routing
+- `playWidget`: optional; widget name. Orch proxies it, registers the resource, and adds the widget to **all tools** from that server — new tools the MCP adds are picked up automatically.
 
 ## Env vars
 

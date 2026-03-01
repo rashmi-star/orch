@@ -7,7 +7,8 @@
     },
     "youtube": {
       "url": "https://still-thunder-8btdl.run.mcp-use.com/mcp",
-      "prefix": "yt__"
+      "prefix": "yt__",
+      "playWidget": "youtube-player"
     },
     "message": {
       "url": "https://summer-poetry-bwin6.run.mcp-use.com/mcp",

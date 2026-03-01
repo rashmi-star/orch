@@ -117,13 +117,15 @@ for (const [name, cfg] of Object.entries(mcpServers)) {
   }
 }
 
-const DEFAULT_MCP_BASE = (mcpServers[SERVER_NAMES[0]]?.url || "https://young-surf-xt5j8.run.mcp-use.com/mcp").replace(/\/mcp\/?$/, "");
+const MUSIC_SERVER = SERVER_NAMES.find((k) => mcpServers[k].playWidget === "music-player") || SERVER_NAMES[0];
+const TARGET_MCP_URL = mcpServers[MUSIC_SERVER]?.url || "https://young-surf-xt5j8.run.mcp-use.com/mcp";
+const TARGET_MCP_BASE = TARGET_MCP_URL.replace(/\/mcp\/?$/, "");
 
 function getProxyBaseForPath(path: string): string {
   for (const [widgetName, base] of Object.entries(WIDGET_TO_BASE)) {
     if (path.includes(widgetName)) return base;
   }
-  return DEFAULT_MCP_BASE;
+  return TARGET_MCP_BASE;
 }
 
 type RemoteTool = {
@@ -456,7 +458,7 @@ function jsonSchemaToZod(inputSchema: any): z.ZodObject<any> {
 }
 
 /** All MCP base URLs that may appear in tool results (for widget URL rewriting) */
-const ALL_MCP_BASES = [...new Set([DEFAULT_MCP_BASE, ...Object.values(WIDGET_TO_BASE)])];
+const ALL_MCP_BASES = [...new Set([TARGET_MCP_BASE, ...Object.values(WIDGET_TO_BASE)])];
 
 /** Recursively rewrite remote MCP URLs to orch proxy so client can load widgets */
 function rewriteWidgetUrls(obj: any): any {

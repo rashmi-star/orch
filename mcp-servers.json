@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "music": {
+      "url": "https://young-surf-xt5j8.run.mcp-use.com/mcp",
+      "prefix": "remote__",
+      "playWidget": "music-player"
+    },
+    "youtube": {
+      "url": "https://still-thunder-8btdl.run.mcp-use.com/mcp",
+      "prefix": "yt__"
+    },
+    "message": {
+      "url": "https://summer-poetry-bwin6.run.mcp-use.com/mcp",
+      "prefix": "chat__"
+    }
+  }
+}

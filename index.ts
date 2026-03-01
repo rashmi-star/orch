@@ -2,11 +2,51 @@ import { MCPServer, error, object, text } from "mcp-use/server";
 import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import { MCPClient } from "mcp-use";
 import { z } from "zod";
+import { readFileSync } from "fs";
+import { join } from "path";
 
-const TARGET_MCP_URL =
-  process.env.TARGET_MCP_URL || "https://young-surf-xt5j8.run.mcp-use.com/mcp";
+// Load MCP servers from config file - add new URLs here, no code changes needed
+const CONFIG_PATH = process.env.MCP_SERVERS_FILE || join(process.cwd(), "mcp-servers.json");
+
+interface ServerConfig {
+  url: string;
+  prefix: string;
+  playWidget?: string;
+}
+
+type McpServersConfig = Record<string, ServerConfig>;
+
+function loadMcpConfig(): { mcpServers: McpServersConfig } {
+  try {
+    const raw = readFileSync(CONFIG_PATH, "utf-8");
+    const parsed = JSON.parse(raw) as { mcpServers?: McpServersConfig };
+    if (!parsed.mcpServers || typeof parsed.mcpServers !== "object") {
+      throw new Error("mcpServers must be an object");
+    }
+    return { mcpServers: parsed.mcpServers };
+  } catch (err: any) {
+    console.warn(`Could not load ${CONFIG_PATH}, using defaults: ${err.message}`);
+    return {
+      mcpServers: {
+        music: {
+          url: "https://young-surf-xt5j8.run.mcp-use.com/mcp",
+          prefix: "remote__",
+          playWidget: "music-player",
+        },
+        youtube: { url: "https://still-thunder-8btdl.run.mcp-use.com/mcp", prefix: "yt__" },
+        message: { url: "https://summer-poetry-bwin6.run.mcp-use.com/mcp", prefix: "chat__" },
+      },
+    };
+  }
+}
+
+const { mcpServers } = loadMcpConfig();
+const SERVER_NAMES = Object.keys(mcpServers);
+
+// Find music server (has playWidget) for widget resource and play-song
+const MUSIC_SERVER = SERVER_NAMES.find((k) => mcpServers[k].playWidget) || SERVER_NAMES[0];
+const TARGET_MCP_URL = mcpServers[MUSIC_SERVER]?.url || "https://young-surf-xt5j8.run.mcp-use.com/mcp";
 const TARGET_MCP_BASE = TARGET_MCP_URL.replace(/\/mcp\/?$/, "");
-const TARGET_SERVER_NAME = process.env.TARGET_SERVER_NAME || "remote_music";
 
 type RemoteTool = {
   name: string;
@@ -20,7 +60,7 @@ const server = new MCPServer({
   title: "Music Intent MCP",
   version: "1.0.0",
   description:
-    "Uses a remote MCP as a tool source and routes natural language play-song commands.",
+    "Orchestrates music, YouTube, and message MCPs. Routes play to music, exposes yt__ and chat__ tools.",
   baseUrl: ORCH_BASE,
   host: "0.0.0.0",
 });
@@ -133,8 +173,9 @@ server.resource(
   }
 );
 
-let remoteSession: Awaited<ReturnType<MCPClient["createSession"]>> | null = null;
-let remoteTools: RemoteTool[] = [];
+type Session = Awaited<ReturnType<MCPClient["createSession"]>>;
+const sessions: Record<string, Session | null> = {};
+const toolsByServer: Record<string, RemoteTool[]> = {};
 
 function jsonSchemaPropertyToZod(prop: any): z.ZodType {
   if (!prop) return z.any();
@@ -282,46 +323,72 @@ function buildArgsFromSchema(inputSchema: any, songQuery: string, rawCommand: st
   return args;
 }
 
+let mcpClient: InstanceType<typeof MCPClient> | null = null;
+
 async function ensureRemoteConnected() {
-  if (remoteSession) return;
+  if (mcpClient) return;
 
-  const client = MCPClient.fromDict({
-    mcpServers: {
-      [TARGET_SERVER_NAME]: {
-        url: TARGET_MCP_URL,
-      },
-    },
-  });
+  const clientConfig: Record<string, { url: string }> = {};
+  for (const [name, cfg] of Object.entries(mcpServers)) {
+    clientConfig[name] = { url: cfg.url };
+  }
 
-  remoteSession = await client.createSession(TARGET_SERVER_NAME);
-  remoteTools = await remoteSession.listTools();
+  mcpClient = MCPClient.fromDict({ mcpServers: clientConfig });
+
+  for (const serverName of SERVER_NAMES) {
+    const session = await mcpClient.createSession(serverName);
+    sessions[serverName] = session;
+    toolsByServer[serverName] = await session.listTools();
+  }
 
   const playToolNames = ["play", "play-song", "play_song"];
-  for (const remoteTool of remoteTools) {
-    const isPlayTool = playToolNames.includes(remoteTool.name.toLowerCase());
-    server.tool(
-      {
-        name: `remote__${remoteTool.name}`,
-        description: `[remote] ${remoteTool.description || remoteTool.name}`,
-        schema: jsonSchemaToZod(remoteTool.inputSchema),
-        ...(isPlayTool && {
-          widget: {
-            name: "music-player",
-            invoking: "Searching for your song...",
-            invoked: "Now playing",
-          },
-        }),
-      },
-      async (args: any) => {
-        if (!remoteSession) return error("Remote MCP is not connected.");
-        try {
-          const result = await remoteSession.callTool(remoteTool.name, args);
-          return formatRemoteResult(result);
-        } catch (err: any) {
-          return error(`Remote tool failed (${remoteTool.name}): ${err.message}`);
+  const musicTools = toolsByServer[MUSIC_SERVER] || [];
+
+  for (const [serverName, config] of Object.entries(mcpServers)) {
+    const serverTools = toolsByServer[serverName] || [];
+    const session = sessions[serverName];
+    const isMusicServer = serverName === MUSIC_SERVER;
+
+    for (const tool of serverTools) {
+      const prefixedName = `${config.prefix}${tool.name}`;
+      const isPlayTool = isMusicServer && playToolNames.includes(tool.name.toLowerCase());
+      const widgetName = config.playWidget;
+
+      server.tool(
+        {
+          name: prefixedName,
+          description: `[${serverName}] ${tool.description || tool.name}`,
+          schema: jsonSchemaToZod(tool.inputSchema),
+          ...(isPlayTool &&
+            widgetName && {
+              widget: {
+                name: widgetName,
+                invoking: "Searching for your song...",
+                invoked: "Now playing",
+              },
+            }),
+        },
+        async (args: any) => {
+          if (!session) return error(`${serverName} MCP is not connected.`);
+          try {
+            const result = await session.callTool(tool.name, args);
+            if (result?.isError) {
+              const msg = (result.content?.[0] as { text?: string })?.text || "Tool failed";
+              return error(msg);
+            }
+            if (isMusicServer && (result?.content?.length || result?.structuredContent != null || result?._meta != null)) {
+              return formatRemoteResult(result);
+            }
+            if (result?.content?.length || result?.structuredContent != null || result?._meta != null) {
+              return result as any;
+            }
+            return text("Done.");
+          } catch (err: any) {
+            return error(`${serverName} tool failed (${tool.name}): ${(err as Error).message}`);
+          }
         }
-      }
-    );
+      );
+    }
   }
 }
 
@@ -334,16 +401,14 @@ server.tool(
   async () => {
     try {
       await ensureRemoteConnected();
-      return object({
-        targetMcpUrl: TARGET_MCP_URL,
-        tools: remoteTools.map((tool) => ({
-          name: tool.name,
-          description: tool.description || "",
-          inputSchema: tool.inputSchema || {},
-        })),
-      });
+      const out: Record<string, { url: string; tools: { name: string; description: string }[] }> = {};
+      for (const [name, cfg] of Object.entries(mcpServers)) {
+        const tools = toolsByServer[name] || [];
+        out[name] = { url: cfg.url, tools: tools.map((t) => ({ name: t.name, description: t.description || "" })) };
+      }
+      return object(out);
     } catch (err: any) {
-      return error(`Failed to connect to remote MCP: ${err.message}`);
+      return error(`Failed to connect: ${err.message}`);
     }
   }
 );
@@ -387,7 +452,7 @@ server.tool(
       return executePlaySongCommand(command);
     }
     return text(
-      "I only auto-route play-song intents right now. Use 'play-song' or call a specific 'remote__*' tool."
+      "I route play-song to music. Use chat__* for messages, yt__* for YouTube. Try 'play-song' or 'list-remote-tools'."
     );
   }
 );
@@ -395,9 +460,11 @@ server.tool(
 async function executePlaySongCommand(command: string) {
   try {
     await ensureRemoteConnected();
-    if (!remoteSession) return error("Remote MCP is not connected.");
+    const musicSession = sessions[MUSIC_SERVER];
+    const musicTools = toolsByServer[MUSIC_SERVER] || [];
+    if (!musicSession) return error("Music MCP is not connected.");
 
-    const playTool = pickPlayTool(remoteTools);
+    const playTool = pickPlayTool(musicTools);
     if (!playTool) {
       return error(
         "No remote play/music tool found. Use list-remote-tools to inspect available tools."
@@ -406,7 +473,7 @@ async function executePlaySongCommand(command: string) {
 
     const songQuery = extractSongQuery(command);
     const args = buildArgsFromSchema(playTool.inputSchema, songQuery, command);
-    const result = await remoteSession.callTool(playTool.name, args);
+    const result = await musicSession.callTool(playTool.name, args);
     return formatRemoteResult(result);
   } catch (err: any) {
     return error(`Failed to execute play-song command: ${err.message}`);
@@ -423,11 +490,8 @@ console.log(
 
 ensureRemoteConnected()
   .then(() => {
-    console.log(
-      `Connected to remote MCP with ${remoteTools.length} tool(s): ${remoteTools
-        .map((t) => t.name)
-        .join(", ")}`
-    );
+    const counts = SERVER_NAMES.map((n) => `${n}: ${(toolsByServer[n] || []).length}`).join(", ");
+    console.log(`Connected: ${counts} tools`);
   })
   .catch((err) => {
     console.warn(`Remote MCP connection deferred: ${err.message}`);

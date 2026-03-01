@@ -118,6 +118,7 @@ for (const [name, cfg] of Object.entries(mcpServers)) {
 }
 
 const MUSIC_SERVER = SERVER_NAMES.find((k) => mcpServers[k].playWidget === "music-player") || SERVER_NAMES[0];
+const HAS_MUSIC_WIDGET = !!mcpServers[MUSIC_SERVER]?.playWidget;
 const TARGET_MCP_URL = mcpServers[MUSIC_SERVER]?.url || "https://young-surf-xt5j8.run.mcp-use.com/mcp";
 const TARGET_MCP_BASE = TARGET_MCP_URL.replace(/\/mcp\/?$/, "");
 
@@ -657,11 +658,9 @@ server.tool(
     schema: z.object({
       command: z.string().min(1).describe("Natural language command from user"),
     }),
-    widget: {
-      name: "music-player",
-      invoking: "Searching for your song...",
-      invoked: "Now playing",
-    },
+    ...(HAS_MUSIC_WIDGET && {
+      widget: { name: "music-player", invoking: "Searching for your song...", invoked: "Now playing" },
+    }),
   },
   async ({ command }) => {
     return executePlaySongCommand(command);
@@ -676,11 +675,9 @@ server.tool(
     schema: z.object({
       command: z.string().min(1),
     }),
-    widget: {
-      name: "music-player",
-      invoking: "Searching for your song...",
-      invoked: "Now playing",
-    },
+    ...(HAS_MUSIC_WIDGET && {
+      widget: { name: "music-player", invoking: "Searching for your song...", invoked: "Now playing" },
+    }),
   },
   async ({ command }) => {
     const trimmed = command.trim();

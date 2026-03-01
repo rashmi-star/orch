@@ -149,79 +149,10 @@ server.app.get("/config", (c) => {
   });
 });
 
-// Orch dashboard: MCP icons; click copies @server for next message
-server.app.get("/", (c) => {
-  const host = c.req.header("host");
-  const proto = c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || "https";
-  const base = host ? `${proto}://${host}` : ORCH_BASE;
-  const mcps = Object.entries(mcpServers).map(([name, cfg]) => ({
-    name,
-    icon: cfg.icon ?? DEFAULT_ICONS[name] ?? "🔗",
-    prefix: cfg.prefix,
-    atTag: `@${name}`,
-  }));
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Orch – MCP Hub</title>
-  <style>
-    * { box-sizing: border-box; }
-    body { font-family: system-ui, sans-serif; margin: 0; min-height: 100vh; background: #0f0f12; color: #e4e4e7; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1.5rem; }
-    h1 { font-size: 1.5rem; font-weight: 600; margin-bottom: 0.5rem; }
-    .sub { color: #71717a; font-size: 0.9rem; margin-bottom: 2rem; }
-    .grid { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: center; }
-    .mcp { background: #18181b; border: 1px solid #27272a; border-radius: 12px; padding: 1.25rem 1.5rem; cursor: pointer; transition: all 0.15s; display: flex; align-items: center; gap: 0.75rem; min-width: 140px; }
-    .mcp:hover { border-color: #3f3f46; background: #27272a; transform: translateY(-2px); }
-    .mcp:active { transform: translateY(0); }
-    .mcp-icon { font-size: 1.75rem; }
-    .mcp-name { font-weight: 500; text-transform: capitalize; }
-    .mcp-tag { font-size: 0.75rem; color: #71717a; margin-top: 0.25rem; }
-    .toast { position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%); background: #27272a; padding: 0.5rem 1rem; border-radius: 8px; font-size: 0.9rem; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
-    .toast.show { opacity: 1; }
-  </style>
-</head>
-<body>
-  <h1>Orch</h1>
-  <p class="sub">Click an MCP to copy its @tag for your next message</p>
-  <div class="grid">
-    ${mcps
-      .map(
-        (m) => `
-    <button class="mcp" data-tag="${m.atTag}" title="Copy ${m.atTag}">
-      <span class="mcp-icon">${m.icon}</span>
-      <div>
-        <div class="mcp-name">${m.name}</div>
-        <div class="mcp-tag">${m.atTag}</div>
-      </div>
-    </button>`
-      )
-      .join("")}
-  </div>
-  <div class="toast" id="toast">Copied!</div>
-  <script>
-    document.querySelectorAll('.mcp').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const tag = btn.dataset.tag + ' ';
-        try {
-          await navigator.clipboard.writeText(tag);
-          const t = document.getElementById('toast');
-          t.textContent = 'Copied ' + tag.trim() + ' – paste in your next message';
-          t.classList.add('show');
-          setTimeout(() => t.classList.remove('show'), 2000);
-        } catch (e) {
-          prompt('Copy this for your next message:', tag);
-        }
-      });
-    });
-  </script>
-</body>
-</html>`;
-  return c.html(html);
-});
+// Orch dashboard: MCP icons; click copies @server for next message (same style as widget)
+server.app.get("/", (c) => c.html(buildOrchHubHtml(ORCH_BASE)));
 
-// Orch hub widget – shows in chat; click MCP icons to copy @tag
+// Orch hub widget – shows in chat; click MCP icons to copy @tag (styled like music/yt widgets)
 function buildOrchHubHtml(base: string): string {
   const mcps = Object.entries(mcpServers).map(([name, cfg]) => ({
     name,
@@ -232,25 +163,36 @@ function buildOrchHubHtml(base: string): string {
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-*{box-sizing:border-box}
-body{font-family:system-ui,sans-serif;margin:0;padding:1rem;background:#0f0f12;color:#e4e4e7}
-h2{font-size:1rem;margin:0 0 0.75rem 0}
-.grid{display:flex;flex-wrap:wrap;gap:0.5rem}
-.mcp{background:#18181b;border:1px solid #27272a;border-radius:8px;padding:0.6rem 0.9rem;cursor:pointer;display:flex;align-items:center;gap:0.5rem;transition:all .15s}
-.mcp:hover{border-color:#3f3f46;background:#27272a}
-.mcp-icon{font-size:1.25rem}
-.mcp-name{font-weight:500;font-size:0.9rem;text-transform:capitalize}
-.mcp-tag{font-size:0.7rem;color:#71717a}
-.toast{position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:#27272a;padding:0.4rem 0.8rem;border-radius:6px;font-size:0.8rem;opacity:0;transition:opacity .2s}
-.toast.show{opacity:1}
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--orch-radius:16px;--orch-purple:#8b5cf6;--orch-pink:#ec4899;--orch-bg:#0a0a0f;--orch-surface:rgba(255,255,255,0.04);--orch-border:rgba(255,255,255,0.06);--orch-text:#f0f0f5;--orch-muted:rgba(255,255,255,0.45)}
+body{font-family:Inter,-apple-system,BlinkMacSystemFont,sans-serif;background:var(--orch-bg);color:var(--orch-text);font-size:14px;-webkit-font-smoothing:antialiased;padding:20px;max-width:420px;margin:0 auto}
+.orch-root{position:relative;border-radius:var(--orch-radius);border:1px solid var(--orch-border);overflow:hidden;background:linear-gradient(180deg,rgba(139,92,246,0.06) 0%,transparent 50%)}
+.orch-header{padding:16px 20px 12px;border-bottom:1px solid var(--orch-border)}
+.orch-title{font-size:15px;font-weight:650;letter-spacing:-0.02em;color:#fff}
+.orch-sub{font-size:12px;color:var(--orch-muted);margin-top:4px}
+.orch-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px;padding:16px 20px 20px}
+.orch-card{background:var(--orch-surface);border:1px solid var(--orch-border);border-radius:12px;padding:14px 16px;cursor:pointer;display:flex;align-items:center;gap:12px;transition:all .2s ease}
+.orch-card:hover{border-color:rgba(139,92,246,0.35);background:rgba(139,92,246,0.08);transform:translateY(-1px);box-shadow:0 4px 20px rgba(139,92,246,0.12)}
+.orch-card:active{transform:translateY(0)}
+.orch-icon{font-size:24px;width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,0.06);flex-shrink:0}
+.orch-card:hover .orch-icon{background:rgba(139,92,246,0.2)}
+.orch-card-body{min-width:0}
+.orch-name{font-weight:600;font-size:13px;text-transform:capitalize;color:#fff}
+.orch-tag{font-size:11px;color:var(--orch-muted);margin-top:2px;font-family:ui-monospace,monospace}
+.orch-toast{position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:rgba(15,15,20,0.95);padding:0.5rem 1rem;border-radius:8px;font-size:12px;color:#fff;border:1px solid var(--orch-border);opacity:0;transition:opacity .2s;pointer-events:none}
+.orch-toast.show{opacity:1}
 </style></head>
 <body>
-<h2>Orch – MCP Hub</h2>
-<p style="color:#71717a;font-size:0.85rem;margin-bottom:0.75rem">Click to copy @tag for your next message</p>
-<div class="grid">${mcps.map((m) => `<button class="mcp" data-tag="${m.atTag}" title="Copy ${m.atTag}"><span class="mcp-icon">${m.icon}</span><div><div class="mcp-name">${m.name}</div><div class="mcp-tag">${m.atTag}</div></div></button>`).join("")}</div>
-<div class="toast" id="toast">Copied!</div>
+<div class="orch-root">
+  <div class="orch-header">
+    <h2 class="orch-title">Orch hub</h2>
+    <p class="orch-sub">Click an MCP to copy its @tag for your next message</p>
+  </div>
+  <div class="orch-grid">${mcps.map((m) => `<button class="orch-card" data-tag="${m.atTag}" title="Copy ${m.atTag}"><span class="orch-icon">${m.icon}</span><div class="orch-card-body"><div class="orch-name">${m.name}</div><div class="orch-tag">${m.atTag}</div></div></button>`).join("")}</div>
+</div>
+<div class="orch-toast" id="toast">Copied!</div>
 <script>
-document.querySelectorAll('.mcp').forEach(btn=>{btn.addEventListener('click',async()=>{const tag=btn.dataset.tag+' ';try{await navigator.clipboard.writeText(tag);const t=document.getElementById('toast');t.textContent='Copied '+tag.trim();t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1500)}catch(e){prompt('Copy:',tag)}})});
+document.querySelectorAll('.orch-card').forEach(btn=>{btn.addEventListener('click',async()=>{const tag=btn.dataset.tag+' ';try{await navigator.clipboard.writeText(tag);const t=document.getElementById('toast');t.textContent='Copied '+tag.trim();t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1500)}catch(e){prompt('Copy:',tag)}})});
 </script></body></html>`;
 }
 

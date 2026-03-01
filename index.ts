@@ -117,16 +117,13 @@ for (const [name, cfg] of Object.entries(mcpServers)) {
   }
 }
 
-const MUSIC_SERVER = SERVER_NAMES.find((k) => mcpServers[k].playWidget === "music-player") || SERVER_NAMES[0];
-const HAS_MUSIC_WIDGET = !!mcpServers[MUSIC_SERVER]?.playWidget;
-const TARGET_MCP_URL = mcpServers[MUSIC_SERVER]?.url || "https://young-surf-xt5j8.run.mcp-use.com/mcp";
-const TARGET_MCP_BASE = TARGET_MCP_URL.replace(/\/mcp\/?$/, "");
+const DEFAULT_MCP_BASE = (mcpServers[SERVER_NAMES[0]]?.url || "https://young-surf-xt5j8.run.mcp-use.com/mcp").replace(/\/mcp\/?$/, "");
 
 function getProxyBaseForPath(path: string): string {
   for (const [widgetName, base] of Object.entries(WIDGET_TO_BASE)) {
     if (path.includes(widgetName)) return base;
   }
-  return TARGET_MCP_BASE;
+  return DEFAULT_MCP_BASE;
 }
 
 type RemoteTool = {
@@ -459,7 +456,7 @@ function jsonSchemaToZod(inputSchema: any): z.ZodObject<any> {
 }
 
 /** All MCP base URLs that may appear in tool results (for widget URL rewriting) */
-const ALL_MCP_BASES = [...new Set([TARGET_MCP_BASE, ...Object.values(WIDGET_TO_BASE)])];
+const ALL_MCP_BASES = [...new Set([DEFAULT_MCP_BASE, ...Object.values(WIDGET_TO_BASE)])];
 
 /** Recursively rewrite remote MCP URLs to orch proxy so client can load widgets */
 function rewriteWidgetUrls(obj: any): any {
@@ -494,79 +491,6 @@ function formatRemoteResult(result: any) {
     return rewriteWidgetUrls(JSON.parse(JSON.stringify(result)));
   }
   return text("Remote tool executed successfully.");
-}
-
-function extractSongQuery(command: string): string {
-  const trimmed = command.trim();
-  const cleaned = trimmed.replace(
-    /^(please\s+)?(can you\s+)?(could you\s+)?(would you\s+)?/i,
-    ""
-  );
-  const match =
-    cleaned.match(/(?:play|start|put on)\s+(?:song\s+)?(.+)/i) ||
-    cleaned.match(/(?:play)\s+(.+)/i);
-  return match?.[1]?.trim() || cleaned;
-}
-
-function scorePlayTool(tool: RemoteTool): number {
-  const name = tool.name.toLowerCase();
-  const desc = (tool.description || "").toLowerCase();
-  let score = 0;
-
-  if (name === "play" || name === "play-song" || name === "play_song") score += 100;
-  if (name.includes("play")) score += 30;
-  if (name.includes("song") || name.includes("music") || name.includes("track")) score += 20;
-  if (desc.includes("play")) score += 15;
-  if (desc.includes("song") || desc.includes("music") || desc.includes("track")) score += 10;
-  return score;
-}
-
-function pickPlayTool(tools: RemoteTool[]): RemoteTool | null {
-  const ranked = [...tools]
-    .map((tool) => ({ tool, score: scorePlayTool(tool) }))
-    .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.score - a.score);
-
-  return ranked.length > 0 ? ranked[0].tool : null;
-}
-
-function buildArgsFromSchema(inputSchema: any, songQuery: string, rawCommand: string): Record<string, any> {
-  const properties = inputSchema?.properties || {};
-  const required = new Set<string>((inputSchema?.required || []) as string[]);
-  const args: Record<string, any> = {};
-
-  for (const [key, prop] of Object.entries(properties as Record<string, any>)) {
-    const lowerKey = key.toLowerCase();
-    const propType = prop?.type;
-
-    if (
-      /song|track|title|query|search|name|prompt|text|message/.test(lowerKey) &&
-      (required.has(key) || /song|track|title|query|search/.test(lowerKey))
-    ) {
-      args[key] = songQuery;
-      continue;
-    }
-
-    if (/command|input|utterance/.test(lowerKey) && required.has(key)) {
-      args[key] = rawCommand;
-      continue;
-    }
-
-    if (/url|uri/.test(lowerKey) && /^https?:\/\//i.test(songQuery) && required.has(key)) {
-      args[key] = songQuery;
-      continue;
-    }
-
-    if (required.has(key)) {
-      if (propType === "boolean") args[key] = false;
-      else if (propType === "number" || propType === "integer") args[key] = 1;
-      else if (propType === "array") args[key] = [];
-      else if (propType === "object") args[key] = {};
-      else args[key] = songQuery;
-    }
-  }
-
-  return args;
 }
 
 let mcpClient: InstanceType<typeof MCPClient> | null = null;
@@ -650,91 +574,6 @@ server.tool(
   }
 );
 
-if (HAS_MUSIC_WIDGET) {
-  server.tool(
-    {
-      name: "play-song",
-      description:
-        "Handle a natural-language play request (e.g. 'play song believer') by selecting and calling the best remote play tool.",
-      schema: z.object({
-        command: z.string().min(1).describe("Natural language command from user"),
-      }),
-      widget: { name: "music-player", invoking: "Searching for your song...", invoked: "Now playing" },
-    },
-    async ({ command }) => {
-      return executePlaySongCommand(command);
-    }
-  );
-
-  server.tool(
-    {
-      name: "route-command",
-      description:
-        "Route a plain user command. Supports @music, @youtube, @message to target a specific MCP. E.g. '@music play believer' or '@youtube search coldplay'.",
-      schema: z.object({
-        command: z.string().min(1),
-      }),
-      widget: { name: "music-player", invoking: "Searching for your song...", invoked: "Now playing" },
-    },
-    async ({ command }) => {
-    const trimmed = command.trim();
-    const atMatch = trimmed.match(/^@(\w+)\s+(.+)$/);
-    let target: string | null = null;
-    let rest = trimmed;
-
-    if (atMatch) {
-      target = atMatch[1].toLowerCase();
-      rest = atMatch[2].trim();
-      if (!mcpServers[target]) {
-        target = null;
-        rest = trimmed;
-      }
-    }
-
-    // @music or implicit play/music keywords
-    const lower = rest.toLowerCase();
-    const isPlayIntent =
-      target === "music" ||
-      (/\b(play|start|put on)\b/.test(lower) && /\b(song|music|track)\b/.test(lower));
-
-    if (isPlayIntent && rest) {
-      return executePlaySongCommand(rest);
-    }
-
-    // @youtube: try search tool for "search X" or plain query
-    if (target === "youtube" && rest) {
-      await ensureRemoteConnected();
-      const searchMatch = rest.match(/^search\s+(.+)$/i) || (rest ? [null, rest] : null);
-      const query = searchMatch?.[1]?.trim() || rest;
-      const searchTool = (toolsByServer["youtube"] || []).find(
-        (t) => t.name.toLowerCase().includes("search")
-      );
-      if (searchTool && query) {
-        const args = buildArgsFromSchema(searchTool.inputSchema, query, rest);
-        return executeRemoteTool("youtube", searchTool.name, args);
-      }
-      return text(`For YouTube use: yt__search "query" or yt__play "url". Try: yt__search "${rest.slice(0, 30)}"`);
-    }
-
-    // @message: guidance
-    if (target === "message") {
-      return text("For messages use: chat__send, chat__read, chat__register. Example: chat__send { to, body }");
-    }
-
-    // Generic @target: show available tools
-    if (target && mcpServers[target]) {
-      await ensureRemoteConnected();
-      const tools = (toolsByServer[target] || []).slice(0, 5).map((t) => `${mcpServers[target].prefix}${t.name}`).join(", ");
-      return text(`@${target} tools: ${tools || "none"}${rest ? `. For "${rest}" try the matching tool.` : ""}`);
-    }
-
-    return text(
-      "Use @music, @youtube, @message to target an MCP. Or: play-song, list-remote-tools. Visit / for the dashboard."
-    );
-  }
-  );
-}
-
 async function executeRemoteTool(
   serverName: string,
   toolName: string,
@@ -761,32 +600,9 @@ async function executeRemoteTool(
   }
 }
 
-async function executePlaySongCommand(command: string) {
-  try {
-    await ensureRemoteConnected();
-    const musicSession = sessions[MUSIC_SERVER];
-    const musicTools = toolsByServer[MUSIC_SERVER] || [];
-    if (!musicSession) return error("Music MCP is not connected.");
-
-    const playTool = pickPlayTool(musicTools);
-    if (!playTool) {
-      return error(
-        "No remote play/music tool found. Use list-remote-tools to inspect available tools."
-      );
-    }
-
-    const songQuery = extractSongQuery(command);
-    const args = buildArgsFromSchema(playTool.inputSchema, songQuery, command);
-    const result = await musicSession.callTool(playTool.name, args);
-    return formatRemoteResult(result);
-  } catch (err: any) {
-    return error(`Failed to execute play-song command: ${err.message}`);
-  }
-}
-
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3002;
 console.log(
-  `music-intent-mcp starting on port ${PORT}. Target remote MCP: ${TARGET_MCP_URL}`
+  `Orch starting on port ${PORT}. MCPs: ${SERVER_NAMES.join(", ")}`
 );
 console.log(
   `MCP_URL (ORCH_BASE): ${ORCH_BASE} — must match deployed URL for widget stream to work`

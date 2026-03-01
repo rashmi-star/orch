@@ -3,7 +3,6 @@
 MCP server built with `mcp-use` that:
 - Connects to **music** (young-surf-xt5j8), **YouTube** (still-thunder-8btdl), **message** (summer-poetry-bwin6)
 - Exposes `remote__*` (music), `yt__*` (YouTube), `chat__*` (message)
-- Routes play requests via `play-song` and `route-command`
 
 ## Run
 
@@ -71,9 +70,7 @@ function onEdit() {
 
 ## Tools
 
-- `list-remote-tools` — list music + message tools
-- `play-song` (natural language, e.g. `"play song believer"`)
-- `route-command` (auto-routes play/music intents)
+- `list-remote-tools` — list tools from all connected MCPs
 - `remote__*` — music tools (play, search, etc.)
 - `yt__*` — YouTube tools (search, play videos inline)
 - `chat__*` — message tools (register, send, read inbox, etc.)

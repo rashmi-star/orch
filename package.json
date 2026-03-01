@@ -2,7 +2,7 @@
   "name": "music-intent-mcp",
   "version": "1.0.0",
   "type": "module",
-  "description": "Intent MCP that uses another MCP as a tool source (play-song routing)",
+  "description": "Orch MCP orchestrator — connects to music, YouTube, message MCPs and exposes prefixed tools",
   "main": "dist/index.js",
   "engines": {
     "node": ">=20.19.0"

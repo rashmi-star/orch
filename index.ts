@@ -101,20 +101,16 @@ server.resource(
       return { contents: [{ uri: "ui://widget/music-player.html", mimeType: "text/plain", text: "Widget unavailable" }] };
     }
     const html = await res.text();
-    const base = ORCH_BASE;
-    const targetEsc = TARGET_MCP_BASE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const proxyBase = `${base}/widget-proxy/mcp-use/widgets`;
-    // Inject base URL so widget can fetch /stream/ when iframe has null/blob origin (proxied via orch).
-    // No backend change: we rewrite window.location.origin -> (__WIDGET_BASE_URL__||window.location.origin) in the built JS.
-    const baseScript = `<script>window.__WIDGET_BASE_URL__="${base.replace(/\/$/, "")}";</script>`;
+    const base = TARGET_MCP_BASE.replace(/\/$/, "");
+    // Point widget to music-player-mcp directly - it exposes /mcp-use/widgets and /stream.
+    // Orch gateway doesn't expose custom routes, so we load from the backend that does.
+    const baseScript = `<script>window.__WIDGET_BASE_URL__="${base}";</script>`;
     const rewritten = html
       .replace(/<head\b[^>]*>/, (m) => m + baseScript)
       .replace(/<html\b[^>]*>/, (m) => (html.includes("<head") ? m : m + baseScript))
-      .replace(/window\.location\.origin/g, "(window.__WIDGET_BASE_URL__||window.location.origin)")
-      .replace(new RegExp(targetEsc + "/mcp-use/widgets/", "g"), `${proxyBase}/`)
-      .replace(new RegExp(targetEsc + "/mcp-use/public", "g"), `${base}/widget-proxy/mcp-use/public`)
-      .replace(/<base href="[^"]*"\s*\/>/, `<base href="${base}" />`)
-      .replace(/(src|href)=["']\/mcp-use\/widgets\/([^"']*)["']/g, `$1="${proxyBase}/$2"`);
+      .replace(/<base href="[^"]*"\s*\/>/, `<base href="${base}/" />`)
+      .replace(/window\.location\.origin/g, "(window.__WIDGET_BASE_URL__||window.location.origin)");
+    // No URL rewriting - keep original paths; base href makes them resolve to music-player-mcp
     return {
       contents: [
         {
@@ -126,8 +122,8 @@ server.resource(
               prefersBorder: false,
               domain: base,
               csp: {
-                connectDomains: ["https://api.audius.co", "https://cdnt-preview.dzcdn.net"],
-                resourceDomains: ["https://cdnt-preview.dzcdn.net", "https://cdn-images.dzcdn.net"],
+                connectDomains: [base, "https://api.audius.co", "https://cdnt-preview.dzcdn.net"],
+                resourceDomains: [base, "https://cdnt-preview.dzcdn.net", "https://cdn-images.dzcdn.net"],
               },
             },
           },

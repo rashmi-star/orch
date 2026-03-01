@@ -221,6 +221,65 @@ server.app.get("/", (c) => {
   return c.html(html);
 });
 
+// Orch hub widget – shows in chat; click MCP icons to copy @tag
+function buildOrchHubHtml(base: string): string {
+  const mcps = Object.entries(mcpServers).map(([name, cfg]) => ({
+    name,
+    icon: cfg.icon ?? DEFAULT_ICONS[name] ?? "🔗",
+    atTag: `@${name}`,
+  }));
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;margin:0;padding:1rem;background:#0f0f12;color:#e4e4e7}
+h2{font-size:1rem;margin:0 0 0.75rem 0}
+.grid{display:flex;flex-wrap:wrap;gap:0.5rem}
+.mcp{background:#18181b;border:1px solid #27272a;border-radius:8px;padding:0.6rem 0.9rem;cursor:pointer;display:flex;align-items:center;gap:0.5rem;transition:all .15s}
+.mcp:hover{border-color:#3f3f46;background:#27272a}
+.mcp-icon{font-size:1.25rem}
+.mcp-name{font-weight:500;font-size:0.9rem;text-transform:capitalize}
+.mcp-tag{font-size:0.7rem;color:#71717a}
+.toast{position:fixed;bottom:1rem;left:50%;transform:translateX(-50%);background:#27272a;padding:0.4rem 0.8rem;border-radius:6px;font-size:0.8rem;opacity:0;transition:opacity .2s}
+.toast.show{opacity:1}
+</style></head>
+<body>
+<h2>Orch – MCP Hub</h2>
+<p style="color:#71717a;font-size:0.85rem;margin-bottom:0.75rem">Click to copy @tag for your next message</p>
+<div class="grid">${mcps.map((m) => `<button class="mcp" data-tag="${m.atTag}" title="Copy ${m.atTag}"><span class="mcp-icon">${m.icon}</span><div><div class="mcp-name">${m.name}</div><div class="mcp-tag">${m.atTag}</div></div></button>`).join("")}</div>
+<div class="toast" id="toast">Copied!</div>
+<script>
+document.querySelectorAll('.mcp').forEach(btn=>{btn.addEventListener('click',async()=>{const tag=btn.dataset.tag+' ';try{await navigator.clipboard.writeText(tag);const t=document.getElementById('toast');t.textContent='Copied '+tag.trim();t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1500)}catch(e){prompt('Copy:',tag)}})});
+</script></body></html>`;
+}
+
+server.resource(
+  {
+    name: "orch-dashboard-widget",
+    uri: "ui://widget/orch-dashboard.html",
+    description: "Orch MCP hub – click icons to copy @tags",
+    mimeType: RESOURCE_MIME_TYPE,
+  },
+  async () => {
+    const base = ORCH_BASE.replace(/\/$/, "");
+    const html = buildOrchHubHtml(base);
+    return {
+      contents: [{ uri: "ui://widget/orch-dashboard.html", mimeType: RESOURCE_MIME_TYPE, text: html }],
+    };
+  }
+);
+
+server.tool(
+  {
+    name: "orch-hub",
+    description: "Show the Orch MCP hub in chat. Click an MCP icon to copy its @tag for your next message.",
+    schema: z.object({}),
+    widget: { name: "orch-dashboard", invoking: "Loading hub...", invoked: "Orch hub" },
+  },
+  async () => text("Orch hub – click an MCP above to copy its @tag, then paste in your next message.")
+);
+
 // Register widget resources for each server with playWidget (config-driven, no code change for new MCPs)
 for (const [serverName, cfg] of Object.entries(mcpServers)) {
   const widgetName = cfg.playWidget;

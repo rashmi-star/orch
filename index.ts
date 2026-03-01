@@ -650,36 +650,33 @@ server.tool(
   }
 );
 
-server.tool(
-  {
-    name: "play-song",
-    description:
-      "Handle a natural-language play request (e.g. 'play song believer') by selecting and calling the best remote play tool.",
-    schema: z.object({
-      command: z.string().min(1).describe("Natural language command from user"),
-    }),
-    ...(HAS_MUSIC_WIDGET && {
+if (HAS_MUSIC_WIDGET) {
+  server.tool(
+    {
+      name: "play-song",
+      description:
+        "Handle a natural-language play request (e.g. 'play song believer') by selecting and calling the best remote play tool.",
+      schema: z.object({
+        command: z.string().min(1).describe("Natural language command from user"),
+      }),
       widget: { name: "music-player", invoking: "Searching for your song...", invoked: "Now playing" },
-    }),
-  },
-  async ({ command }) => {
-    return executePlaySongCommand(command);
-  }
-);
+    },
+    async ({ command }) => {
+      return executePlaySongCommand(command);
+    }
+  );
 
-server.tool(
-  {
-    name: "route-command",
-    description:
-      "Route a plain user command. Supports @music, @youtube, @message to target a specific MCP. E.g. '@music play believer' or '@youtube search coldplay'.",
-    schema: z.object({
-      command: z.string().min(1),
-    }),
-    ...(HAS_MUSIC_WIDGET && {
+  server.tool(
+    {
+      name: "route-command",
+      description:
+        "Route a plain user command. Supports @music, @youtube, @message to target a specific MCP. E.g. '@music play believer' or '@youtube search coldplay'.",
+      schema: z.object({
+        command: z.string().min(1),
+      }),
       widget: { name: "music-player", invoking: "Searching for your song...", invoked: "Now playing" },
-    }),
-  },
-  async ({ command }) => {
+    },
+    async ({ command }) => {
     const trimmed = command.trim();
     const atMatch = trimmed.match(/^@(\w+)\s+(.+)$/);
     let target: string | null = null;
@@ -735,7 +732,8 @@ server.tool(
       "Use @music, @youtube, @message to target an MCP. Or: play-song, list-remote-tools. Visit / for the dashboard."
     );
   }
-);
+  );
+}
 
 async function executeRemoteTool(
   serverName: string,

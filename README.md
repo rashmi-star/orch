@@ -46,7 +46,7 @@ Set `MCP_SERVERS_SHEET` to your sheet URL to load MCPs from a Google Sheet inste
 | youtube| https://still-thunder-8btdl.run.mcp-use.com/mcp | yt__     | youtube-player | ▶️   |
 | message| https://summer-poetry-bwin6.run.mcp-use.com/mcp | chat__   |                | 💬   |
 
-**Required:** Share the sheet as "Anyone with the link can view" so orch can fetch the CSV export.
+**Required:** Share the sheet as "Anyone with the link can view" so orch can fetch the CSV export. When `MCP_SERVERS_SHEET` is set, the sheet is the **only** source of truth — no fallback to `mcp-servers.json`.
 
 **Webhook (no redeploy):** Add a Google Apps Script trigger so orch reloads when you edit the sheet:
 

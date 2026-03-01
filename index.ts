@@ -98,13 +98,9 @@ function parseCsvLine(line: string): string[] {
 
 async function loadMcpConfig(): Promise<{ mcpServers: McpServersConfig }> {
   if (MCP_SERVERS_SHEET) {
-    try {
-      const cfg = await loadMcpConfigFromSheet(MCP_SERVERS_SHEET);
-      console.log(`Loaded ${Object.keys(cfg.mcpServers).length} MCPs from Google Sheet`);
-      return cfg;
-    } catch (err: any) {
-      console.warn(`Sheet load failed (${err.message}), falling back to file`);
-    }
+    const cfg = await loadMcpConfigFromSheet(MCP_SERVERS_SHEET);
+    console.log(`Loaded ${Object.keys(cfg.mcpServers).length} MCPs from Google Sheet`);
+    return cfg;
   }
   return loadMcpConfigFromFile();
 }

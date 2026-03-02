@@ -2,11 +2,8 @@ import { MCPServer, error, object, text } from "mcp-use/server";
 import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import { MCPClient } from "mcp-use";
 import { z } from "zod";
-import { readFileSync, writeFileSync, existsSync } from "fs";
-import { join } from "path";
 
-// Load MCP servers from config file or Google Sheet
-const CONFIG_PATH = process.env.MCP_SERVERS_FILE || join(process.cwd(), "mcp-servers.json");
+// Load MCP servers from Google Sheet only (set MCP_SERVERS_SHEET env)
 const MCP_SERVERS_SHEET = process.env.MCP_SERVERS_SHEET || "";
 
 interface ServerConfig {
@@ -23,26 +20,6 @@ const DEFAULT_ICONS: Record<string, string> = {
 };
 
 type McpServersConfig = Record<string, ServerConfig>;
-
-const DEFAULT_MCP_SERVERS: McpServersConfig = {
-  music: { url: "https://young-surf-xt5j8.run.mcp-use.com/mcp", prefix: "remote__", playWidget: "music-player" },
-  youtube: { url: "https://still-thunder-8btdl.run.mcp-use.com/mcp", prefix: "yt__" },
-  message: { url: "https://summer-poetry-bwin6.run.mcp-use.com/mcp", prefix: "chat__" },
-};
-
-function loadMcpConfigFromFile(): { mcpServers: McpServersConfig } {
-  try {
-    const raw = readFileSync(CONFIG_PATH, "utf-8");
-    const parsed = JSON.parse(raw) as { mcpServers?: McpServersConfig };
-    if (!parsed.mcpServers || typeof parsed.mcpServers !== "object") {
-      throw new Error("mcpServers must be an object");
-    }
-    return { mcpServers: parsed.mcpServers };
-  } catch (err: any) {
-    console.warn(`Could not load ${CONFIG_PATH}, using defaults: ${err.message}`);
-    return { mcpServers: { ...DEFAULT_MCP_SERVERS } };
-  }
-}
 
 async function loadMcpConfigFromSheet(sheetUrl: string): Promise<{ mcpServers: McpServersConfig }> {
   const match = sheetUrl.match(/\/d\/([a-zA-Z0-9_-]+)(?:\/.*gid=(\d+))?/);
@@ -97,12 +74,12 @@ function parseCsvLine(line: string): string[] {
 }
 
 async function loadMcpConfig(): Promise<{ mcpServers: McpServersConfig }> {
-  if (MCP_SERVERS_SHEET) {
-    const cfg = await loadMcpConfigFromSheet(MCP_SERVERS_SHEET);
-    console.log(`Loaded ${Object.keys(cfg.mcpServers).length} MCPs from Google Sheet`);
-    return cfg;
+  if (!MCP_SERVERS_SHEET) {
+    throw new Error("MCP_SERVERS_SHEET env is required. Set it to your Google Sheet URL.");
   }
-  return loadMcpConfigFromFile();
+  const cfg = await loadMcpConfigFromSheet(MCP_SERVERS_SHEET);
+  console.log(`Loaded ${Object.keys(cfg.mcpServers).length} MCPs from Google Sheet`);
+  return cfg;
 }
 
 // Config loaded at startup (async for sheet support)
@@ -118,7 +95,7 @@ for (const [name, cfg] of Object.entries(mcpServers)) {
 }
 
 const MUSIC_SERVER = SERVER_NAMES.find((k) => mcpServers[k].playWidget === "music-player") || SERVER_NAMES[0];
-const TARGET_MCP_URL = mcpServers[MUSIC_SERVER]?.url || "https://young-surf-xt5j8.run.mcp-use.com/mcp";
+const TARGET_MCP_URL = mcpServers[MUSIC_SERVER]?.url ?? "";
 const TARGET_MCP_BASE = TARGET_MCP_URL.replace(/\/mcp\/?$/, "");
 
 function getProxyBaseForPath(path: string): string {
@@ -234,31 +211,13 @@ server.app.get("/api/mcp", async (c) => {
   }
 });
 
-// API: add new MCP (writes to file only; disabled when using sheet)
+// API: add new MCP – config is from Google Sheet only; edit the sheet to add MCPs
 server.app.post("/api/mcp", async (c) => {
-  if (MCP_SERVERS_SHEET) {
-    return c.json({ error: "Using Google Sheet. Edit the sheet to add MCPs, then redeploy." }, 400);
-  }
-  try {
-    const body = await c.req.json() as { name?: string; url?: string; prefix?: string; playWidget?: string; icon?: string };
-    const name = String(body.name || "").trim().toLowerCase().replace(/\s+/g, "-");
-    const url = String(body.url || "").trim();
-    const prefix = String(body.prefix || "").trim() || `${name}__`;
-    if (!name || !url) return c.json({ error: "name and url required" }, 400);
-    if (!/^https?:\/\//.test(url)) return c.json({ error: "url must start with https://" }, 400);
-    const { mcpServers } = loadMcpConfigFromFile();
-    if (mcpServers[name]) return c.json({ error: `MCP "${name}" already exists` }, 400);
-    const normalized = url.replace(/\/+$/, "") + (url.endsWith("/mcp") ? "" : "/mcp");
-    mcpServers[name] = { url: normalized, prefix, ...(body.playWidget && { playWidget: body.playWidget }), ...(body.icon && { icon: body.icon }) };
-    writeFileSync(CONFIG_PATH, JSON.stringify({ mcpServers }, null, 2), "utf-8");
-    return c.json({ ok: true, message: `Added ${name}. Restart orch to apply.` });
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
+  return c.json({ error: "Edit the Google Sheet to add MCPs, then redeploy or call /api/reload." }, 400);
 });
 
-// Orch dashboard: MCP icons + add form (or sheet link when using sheet)
-server.app.get("/", (c) => c.html(buildOrchHubHtml(ORCH_BASE, !MCP_SERVERS_SHEET)));
+// Orch dashboard: MCP icons + sheet link
+server.app.get("/", (c) => c.html(buildOrchHubHtml(ORCH_BASE, false)));
 
 // Orch hub – dashboard HTML (with add form when at /; widget version has no form)
 function buildOrchHubHtml(base: string, includeAddForm = false): string {
@@ -378,6 +337,7 @@ for (const [serverName, cfg] of Object.entries(mcpServers)) {
       mimeType: RESOURCE_MIME_TYPE,
     },
     async () => {
+      // Fetch directly from remote MCP - gateway doesn't expose Orch routes (see commit 59c355b6)
       const res = await fetch(`${widgetBase}/mcp-use/widgets/${widgetName}`);
       if (!res.ok) {
         return { contents: [{ uri: `ui://widget/${widgetName}.html`, mimeType: "text/plain", text: "Widget unavailable" }] };

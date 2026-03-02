@@ -2,8 +2,11 @@ import { MCPServer, error, object, text } from "mcp-use/server";
 import { RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import { MCPClient } from "mcp-use";
 import { z } from "zod";
+import { readFileSync } from "fs";
+import { join } from "path";
 
-// Load MCP servers from Google Sheet only (set MCP_SERVERS_SHEET env)
+// Config: Google Sheet (preferred) or mcp-servers.json. Sheet falls back to file on error.
+const CONFIG_PATH = process.env.MCP_SERVERS_FILE || join(process.cwd(), "mcp-servers.json");
 const MCP_SERVERS_SHEET = process.env.MCP_SERVERS_SHEET || "";
 
 interface ServerConfig {
@@ -20,6 +23,26 @@ const DEFAULT_ICONS: Record<string, string> = {
 };
 
 type McpServersConfig = Record<string, ServerConfig>;
+
+const DEFAULT_MCP_SERVERS: McpServersConfig = {
+  music: { url: "https://young-surf-xt5j8.run.mcp-use.com/mcp", prefix: "remote__", playWidget: "music-player" },
+  youtube: { url: "https://still-thunder-8btdl.run.mcp-use.com/mcp", prefix: "yt__", playWidget: "youtube-player" },
+  message: { url: "https://summer-poetry-bwin6.run.mcp-use.com/mcp", prefix: "chat__" },
+};
+
+function loadMcpConfigFromFile(): { mcpServers: McpServersConfig } {
+  try {
+    const raw = readFileSync(CONFIG_PATH, "utf-8");
+    const parsed = JSON.parse(raw) as { mcpServers?: McpServersConfig };
+    if (!parsed.mcpServers || typeof parsed.mcpServers !== "object") {
+      throw new Error("mcpServers must be an object");
+    }
+    return { mcpServers: parsed.mcpServers };
+  } catch (err: any) {
+    console.warn(`Could not load ${CONFIG_PATH}, using defaults: ${err.message}`);
+    return { mcpServers: { ...DEFAULT_MCP_SERVERS } };
+  }
+}
 
 async function loadMcpConfigFromSheet(sheetUrl: string): Promise<{ mcpServers: McpServersConfig }> {
   const match = sheetUrl.match(/\/d\/([a-zA-Z0-9_-]+)(?:\/.*gid=(\d+))?/);
@@ -74,12 +97,16 @@ function parseCsvLine(line: string): string[] {
 }
 
 async function loadMcpConfig(): Promise<{ mcpServers: McpServersConfig }> {
-  if (!MCP_SERVERS_SHEET) {
-    throw new Error("MCP_SERVERS_SHEET env is required. Set it to your Google Sheet URL.");
+  if (MCP_SERVERS_SHEET) {
+    try {
+      const cfg = await loadMcpConfigFromSheet(MCP_SERVERS_SHEET);
+      console.log(`Loaded ${Object.keys(cfg.mcpServers).length} MCPs from Google Sheet`);
+      return cfg;
+    } catch (err: any) {
+      console.warn(`Sheet load failed (${err.message}), falling back to file`);
+    }
   }
-  const cfg = await loadMcpConfigFromSheet(MCP_SERVERS_SHEET);
-  console.log(`Loaded ${Object.keys(cfg.mcpServers).length} MCPs from Google Sheet`);
-  return cfg;
+  return loadMcpConfigFromFile();
 }
 
 // Config loaded at startup (async for sheet support)
@@ -95,7 +122,7 @@ for (const [name, cfg] of Object.entries(mcpServers)) {
 }
 
 const MUSIC_SERVER = SERVER_NAMES.find((k) => mcpServers[k].playWidget === "music-player") || SERVER_NAMES[0];
-const TARGET_MCP_URL = mcpServers[MUSIC_SERVER]?.url ?? "";
+const TARGET_MCP_URL = mcpServers[MUSIC_SERVER]?.url || "https://young-surf-xt5j8.run.mcp-use.com/mcp";
 const TARGET_MCP_BASE = TARGET_MCP_URL.replace(/\/mcp\/?$/, "");
 
 function getProxyBaseForPath(path: string): string {
@@ -172,6 +199,30 @@ server.app.get("/resources/widgets/*", (c) => proxyToRemote(c, c.req.path));
 server.app.get("/mcp-use/widgets/*", (c) => proxyToRemote(c, c.req.path));
 server.app.get("/stream/*", (c) => proxyToRemote(c, c.req.path));
 
+// Debug: test widget fetch – visit /api/debug/widget?name=music-player to see if Orch can reach the remote
+server.app.get("/api/debug/widget", async (c) => {
+  const name = c.req.query("name") || "music-player";
+  const base = WIDGET_TO_BASE[name];
+  if (!base) {
+    return c.json({ error: `No MCP has playWidget "${name}". WIDGET_TO_BASE: ${JSON.stringify(WIDGET_TO_BASE)}` }, 400);
+  }
+  const url = `${base}/mcp-use/widgets/${name}`;
+  try {
+    const res = await fetch(url);
+    const text = await res.text();
+    return c.json({
+      url,
+      status: res.status,
+      ok: res.ok,
+      contentLength: text.length,
+      preview: text.slice(0, 200),
+      error: res.ok ? null : `Fetch failed: ${res.status} ${res.statusText}`,
+    });
+  } catch (e: any) {
+    return c.json({ url, error: e.message, stack: e.stack }, 500);
+  }
+});
+
 // Debug: verify MCP_URL matches your deployed URL (e.g. https://young-voice-ngjrg.run.mcp-use.com)
 server.app.get("/config", (c) => {
   const host = c.req.header("host");
@@ -211,13 +262,32 @@ server.app.get("/api/mcp", async (c) => {
   }
 });
 
-// API: add new MCP – config is from Google Sheet only; edit the sheet to add MCPs
+// API: add new MCP (writes to file only; disabled when using sheet)
 server.app.post("/api/mcp", async (c) => {
-  return c.json({ error: "Edit the Google Sheet to add MCPs, then redeploy or call /api/reload." }, 400);
+  if (MCP_SERVERS_SHEET) {
+    return c.json({ error: "Using Google Sheet. Edit the sheet to add MCPs, then redeploy." }, 400);
+  }
+  try {
+    const { writeFileSync } = await import("fs");
+    const body = await c.req.json() as { name?: string; url?: string; prefix?: string; playWidget?: string; icon?: string };
+    const name = String(body.name || "").trim().toLowerCase().replace(/\s+/g, "-");
+    const url = String(body.url || "").trim();
+    const prefix = String(body.prefix || "").trim() || `${name}__`;
+    if (!name || !url) return c.json({ error: "name and url required" }, 400);
+    if (!/^https?:\/\//.test(url)) return c.json({ error: "url must start with https://" }, 400);
+    const { mcpServers: current } = loadMcpConfigFromFile();
+    if (current[name]) return c.json({ error: `MCP "${name}" already exists` }, 400);
+    const normalized = url.replace(/\/+$/, "") + (url.endsWith("/mcp") ? "" : "/mcp");
+    current[name] = { url: normalized, prefix, ...(body.playWidget && { playWidget: body.playWidget }), ...(body.icon && { icon: body.icon }) };
+    writeFileSync(CONFIG_PATH, JSON.stringify({ mcpServers: current }, null, 2), "utf-8");
+    return c.json({ ok: true, message: `Added ${name}. Restart orch to apply.` });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
 });
 
-// Orch dashboard: MCP icons + sheet link
-server.app.get("/", (c) => c.html(buildOrchHubHtml(ORCH_BASE, false)));
+// Orch dashboard: MCP icons + add form (when file) or sheet link (when sheet)
+server.app.get("/", (c) => c.html(buildOrchHubHtml(ORCH_BASE, !MCP_SERVERS_SHEET)));
 
 // Orch hub – dashboard HTML (with add form when at /; widget version has no form)
 function buildOrchHubHtml(base: string, includeAddForm = false): string {
@@ -338,8 +408,10 @@ for (const [serverName, cfg] of Object.entries(mcpServers)) {
     },
     async () => {
       // Fetch directly from remote MCP - gateway doesn't expose Orch routes (see commit 59c355b6)
-      const res = await fetch(`${widgetBase}/mcp-use/widgets/${widgetName}`);
+      const widgetUrl = `${widgetBase}/mcp-use/widgets/${widgetName}`;
+      const res = await fetch(widgetUrl);
       if (!res.ok) {
+        console.warn(`Widget fetch failed: ${widgetName} ${res.status} from ${widgetUrl}`);
         return { contents: [{ uri: `ui://widget/${widgetName}.html`, mimeType: "text/plain", text: "Widget unavailable" }] };
       }
       const html = await res.text();
